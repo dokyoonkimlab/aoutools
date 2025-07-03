@@ -1,11 +1,11 @@
-import hail as hl
+import os
 import typing
 import logging
-import os
+import hail as hl
 from ._utils import (
     _log_timing,
-    _prepare_samples_to_keep,
     _standardize_chromosome_column,
+    _prepare_samples_to_keep,
 )
 
 logger = logging.getLogger(__name__)
@@ -143,13 +143,23 @@ def calculate_prs(
     overwrite_output: bool = True,
     detailed_timings: bool = True
 ) -> hl.Table:
-    """
-    Calculates a Polygenic Risk Score (PRS) without splitting multi-allelics.
+    """Calculates a Polygenic Risk Score (PRS) without splitting multi-allelic
+    variants.
 
-    This function computes allele dosages directly from the multi-allelic VDS,
-    avoiding the `split_multi` step. It is compatible with different VDS
+    This function is optimized for performance on the All of Us VDS, where
+    multi-allelic variants are not pre-split. It computes allele dosages
+    directly from the multi-allelic VDS, avoiding the computationally
+    expensive `split_multi` step. It is compatible with different VDS
     versions by handling both global ('GT') and local ('LGT'/'LA') genotype
     encoding schemes.
+
+    To achieve this, the function joins the VDS and the weights table using
+    only the genomic `locus` as a key. A critical consequence of this design
+    is that it assumes there is only **one** variant entry per locus in the
+    `weights_table`. If the weights table contains multiple entries for the
+    same locus, Hail will use the first matching entry it encounters, which
+    can lead to an incorrect PRS calculation. If you prefer additional
+    robustness over speed, consider using the `calculate_prs_split` function.
 
     Parameters
     ----------
@@ -173,23 +183,13 @@ def calculate_prs(
         If True, applies a natural log transformation to the weight column.
         This should be used when weights are provided as odds ratios (OR).
     strict_allele_match : bool, default True
-        If True, validates that one of the alleles is the reference in the VDS.
-        Note: due to the locus-based join of this function, if the
-        `weights_table` contains multiple entries for the same locus (e.g.,
-        one valid A/T variant and one invalid C/G variant), the invalid
-        entry may not be filtered if the locus is kept because of the valid
-        entry. This edge case is rare; however, if you prefer additional
-        robustness over speed, please see the `calculate_prs_split` function.
+        If True, validates that one of the alleles from weight table is the
+        reference and the other is a valid alternate allele in the VDS.
     include_n_shared_loci : bool, default True
         If True, adds a column 'n_shared_loci' with the total number of
         loci shared between the weights table and the VDS.
     sample_id_col : str, default 'person_id'
         The desired name for the sample ID column in the final output table.
-    output_path : str, optional
-        If provided, the final PRS table will be exported as a tab-separated
-        text file to this path.
-    overwrite_output : bool, default True
-        If True, the function will overwrite an existing file at `output_path`.
     detailed_timings : bool, default True
         If True, logs the duration of each major computational step.
 
@@ -198,21 +198,9 @@ def calculate_prs(
     hail.Table
         A Hail Table with the sample ID, the calculated 'prs', and by default,
         the 'n_shared_loci' count.
+
     """
     logger.info("Starting PRS calculation...")
-
-    gcs_output_path = None
-    if output_path:
-        if not output_path.startswith('gs://'):
-            gcs_output_path = _stage_local_file_to_gcs(
-                output_path, sub_dir='prs_results'
-            )
-        else:
-            gcs_output_path = output_path
-        if not overwrite_output and hl.hadoop_exists(gcs_output_path):
-            raise FileExistsError(
-                f"Output path '{gcs_output_path}' already exists."
-            )
 
     if samples_to_keep is not None:
         with _log_timing("Filtering to specified samples", detailed_timings):
@@ -266,11 +254,6 @@ def calculate_prs(
     prs_table = prs_table.select(**final_cols)
     prs_table = prs_table.rename({'s': sample_id_col})
 
-    if gcs_output_path:
-        if overwrite_output and hl.hadoop_exists(gcs_output_path):
-            hl.hadoop_rm(gcs_output_path, recursive=True)
-        prs_table.export(gcs_output_path, header=True, delimiter='\t')
-
     logger.info("PRS calculation complete.")
     return prs_table
 
@@ -291,6 +274,21 @@ def calculate_prs_batch(
     This function is highly efficient for calculating several PRS on the same
     cohort, as it filters the VDS only once for all combined variants.
 
+    Note: it is optimized for performance on the All of Us VDS, where
+    multi-allelic variants are not pre-split. It computes allele dosages
+    directly from the multi-allelic VDS, avoiding the computationally expensive
+    `split_multi` step. It is compatible with different VDS versions by
+    handling both global ('GT') and local ('LGT'/'LA') genotype encoding
+    schemes.
+
+    To achieve this, the function joins the VDS and the weights table using
+    only the genomic `locus` as a key. A critical consequence of this design is
+    that it assumes there is only **one** variant entry per locus in the
+    `weights_table`. If the weights table contains multiple entries for the
+    same locus, Hail will use the first matching entry it encounters, which can
+    lead to an incorrect PRS calculation. If you prefer additional robustness
+    over speed, consider using the `calculate_prs_split_batch` function.
+
     Parameters
     ----------
     weights_map : dict[str, hail.Table]
@@ -303,20 +301,10 @@ def calculate_prs_batch(
     samples_to_keep : hail.Table, list, set, tuple, int, or str, optional
         A collection of sample IDs to keep.
     strict_allele_match : bool, default True
-        If True, validates that one of the alleles is the reference in the VDS.
-        Note: due to the locus-based join of this function, if the
-        `weights_table` contains multiple entries for the same locus (e.g.,
-        one valid A/T variant and one invalid C/G variant), the invalid
-        entry may not be filtered if the locus is kept because of the valid
-        entry. This edge case is rare; however, if you prefer additional
-        robustness over speed, please see the `calculate_prs_split` function.
+        If True, validates that one of the alleles from weight table is the
+        reference and the other is a valid alternate allele in the VDS.
     sample_id_col : str, default 'person_id'
         The desired name for the sample ID column in the final output table.
-    output_path : str, optional
-        If provided, the final PRS table will be exported as a tab-separated
-        text file to this path.
-    overwrite_output : bool, default True
-        If True, the function will overwrite an existing file at `output_path`.
     detailed_timings : bool, default True
         If True, logs the duration of each major computational step.
 
@@ -325,21 +313,9 @@ def calculate_prs_batch(
     hail.Table
         A "wide" Hail Table with one column per calculated PRS and one
         column for the number of shared loci for each score.
+
     """
     logger.info(f"Starting batch PRS calculation for {len(weights_map)} scores...")
-
-    gcs_output_path = None
-    if output_path:
-        if not output_path.startswith('gs://'):
-            gcs_output_path = _stage_local_file_to_gcs(
-                output_path, sub_dir='prs_results'
-            )
-        else:
-            gcs_output_path = output_path
-        if not overwrite_output and hl.hadoop_exists(gcs_output_path):
-            raise FileExistsError(
-                f"Output path '{gcs_output_path}' already exists."
-            )
 
     if samples_to_keep is not None:
         with _log_timing("Filtering to specified samples", detailed_timings):
@@ -417,11 +393,6 @@ def calculate_prs_batch(
         ]
     prs_table = prs_table.select(**final_select_exprs)
     prs_table = prs_table.rename({'s': sample_id_col})
-
-    if gcs_output_path:
-        if overwrite_output and hl.hadoop_exists(gcs_output_path):
-            hl.hadoop_rm(gcs_output_path, recursive=True)
-        prs_table.export(gcs_output_path, header=True, delimiter='\t')
 
     logger.info("Batch PRS calculation complete.")
     return prs_table

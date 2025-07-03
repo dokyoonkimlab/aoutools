@@ -1,7 +1,7 @@
-import hail as hl
+import os
 import typing
 import logging
-import os
+import hail as hl
 from ._utils import (
     _stage_local_file_to_gcs,
     _standardize_chromosome_column,

@@ -1,11 +1,11 @@
-import hail as hl
+import os
 import typing
 import logging
-import os
+import hail as hl
 from ._utils import (
     _log_timing,
-    _prepare_samples_to_keep,
     _standardize_chromosome_column,
+    _prepare_samples_to_keep,
 )
 
 logger = logging.getLogger(__name__)
@@ -84,7 +84,7 @@ def calculate_prs_split(
 ) -> hl.Table:
     """
     Calculates a Polygenic Risk Score (PRS) using a split-multi strategy.
-    
+
     This function implements a "filter-by-locus-then-split" strategy to
     efficiently process large-scale genomic data. This method provides a
     highly accurate count of variants used in the score.
@@ -116,11 +116,6 @@ def calculate_prs_split(
         the VDS. This value is the same for all samples.
     sample_id_col : str, default 'person_id'
         The desired name for the sample ID column in the final output table.
-    output_path : str, optional
-        If provided, the final PRS table will be exported as a tab-separated
-        text file to this path.
-    overwrite_output : bool, default True
-        If True, the function will overwrite an existing file at `output_path`.
     detailed_timings : bool, default True
         If True, logs the duration of each major computational step.
 
@@ -131,19 +126,6 @@ def calculate_prs_split(
         the 'n_shared_variants' count.
     """
     logger.info("Starting PRS calculation with SPLIT-MULTI strategy...")
-
-    gcs_output_path = None
-    if output_path:
-        if not output_path.startswith('gs://'):
-            gcs_output_path = _stage_local_file_to_gcs(
-                output_path, sub_dir='prs_results'
-            )
-        else:
-            gcs_output_path = output_path
-        if not overwrite_output and hl.hadoop_exists(gcs_output_path):
-            raise FileExistsError(
-                f"Output path '{gcs_output_path}' already exists."
-            )
 
     vds_to_process = vds
     if samples_to_keep is not None:
@@ -158,7 +140,7 @@ def calculate_prs_split(
             weight_col_name=weight_col_name,
             log_transform_weight=log_transform_weight
         )
-    
+
     with _log_timing("Filtering VDS to variants in weights table", detailed_timings):
         loci_to_keep = weights_table.key_by('locus').select()
         filtered_variant_data = vds_to_process.variant_data.semi_join_rows(
@@ -191,11 +173,6 @@ def calculate_prs_split(
         final_cols['n_shared_variants'] = n_shared_variants
     prs_table = prs_table.select(**final_cols)
     prs_table = prs_table.rename({'s': sample_id_col})
-
-    if gcs_output_path:
-        if overwrite_output and hl.hadoop_exists(gcs_output_path):
-            hl.hadoop_rm(gcs_output_path, recursive=True)
-        prs_table.export(gcs_output_path, header=True, delimiter='\t')
 
     logger.info("PRS calculation (split strategy) complete.")
     return prs_table
@@ -232,11 +209,6 @@ def calculate_prs_split_batch(
         Specifies the assumed allele orientation in the weights table.
     sample_id_col : str, default 'person_id'
         The desired name for the sample ID column in the final output table.
-    output_path : str, optional
-        If provided, the final PRS table will be exported as a tab-separated
-        text file to this path.
-    overwrite_output : bool, default True
-        If True, the function will overwrite an existing file at `output_path`.
     detailed_timings : bool, default True
         If True, logs the duration of each major computational step.
 
@@ -247,19 +219,6 @@ def calculate_prs_split_batch(
         column for the number of shared variants for each score.
     """
     logger.info(f"Starting batch PRS calculation for {len(weights_map)} scores...")
-
-    gcs_output_path = None
-    if output_path:
-        if not output_path.startswith('gs://'):
-            gcs_output_path = _stage_local_file_to_gcs(
-                output_path, sub_dir='prs_results'
-            )
-        else:
-            gcs_output_path = output_path
-        if not overwrite_output and hl.hadoop_exists(gcs_output_path):
-            raise FileExistsError(
-                f"Output path '{gcs_output_path}' already exists."
-            )
 
     vds_to_process = vds
     if samples_to_keep is not None:
@@ -328,11 +287,6 @@ def calculate_prs_split_batch(
         ]
     prs_table = prs_table.select(**final_select_exprs)
     prs_table = prs_table.rename({'s': sample_id_col})
-
-    if gcs_output_path:
-        if overwrite_output and hl.hadoop_exists(gcs_output_path):
-            hl.hadoop_rm(gcs_output_path, recursive=True)
-        prs_table.export(gcs_output_path, header=True, delimiter='\t')
 
     logger.info("Batch PRS calculation complete.")
     return prs_table

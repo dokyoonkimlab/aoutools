@@ -13,7 +13,7 @@ from ._calculator import (
 )
 
 # Import the main calculator functions from the internal _calculator.py module
-from ._calculator_multi_split import (
+from ._calculator_split_multi import (
     calculate_prs_split,
     calculate_prs_split_batch,
 )
@@ -23,7 +23,7 @@ __all__ = [
     'read_prs_weights',
     'read_prscs',
     'calculate_prs',
-    'calcualte_prs_batch',
+    'calculate_prs_batch',
     'calculate_prs_split',
     'calculate_prs_split_batch',
 ]
