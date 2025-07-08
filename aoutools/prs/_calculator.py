@@ -137,10 +137,8 @@ def calculate_prs(
     weight_col_name: str = 'weight',
     log_transform_weight: bool = False,
     strict_allele_match: bool = True,
-    include_n_shared_loci: bool = True,
+    include_n_shared_loci: bool = False,
     sample_id_col: str = 'person_id',
-    output_path: typing.Optional[str] = None,
-    overwrite_output: bool = True,
     detailed_timings: bool = True
 ) -> hl.Table:
     """Calculates a Polygenic Risk Score (PRS) without splitting multi-allelic
@@ -185,9 +183,10 @@ def calculate_prs(
     strict_allele_match : bool, default True
         If True, validates that one of the alleles from weight table is the
         reference and the other is a valid alternate allele in the VDS.
-    include_n_shared_loci : bool, default True
-        If True, adds a column 'n_shared_loci' with the total number of
-        loci shared between the weights table and the VDS.
+    include_n_shared_loci : bool, default False
+        If True, adds a column 'n_shared_loci' with the total number of loci
+        shared between the weights table and the VDS. Note that this can impact
+        performance
     sample_id_col : str, default 'person_id'
         The desired name for the sample ID column in the final output table.
     detailed_timings : bool, default True
@@ -220,7 +219,6 @@ def calculate_prs(
 
     if strict_allele_match:
         with _log_timing("Performing strict allele match", detailed_timings):
-            initial_count = mt.count_rows()
             vds_alleles = hl.set(mt.alleles)
             ref_allele = mt.alleles[0]
             effect = mt.weights_info.effect_allele
@@ -230,14 +228,10 @@ def calculate_prs(
                 ((noneffect == ref_allele) & vds_alleles.contains(effect))
             ) & (effect != noneffect)
             mt = mt.filter_rows(is_valid_pair)
-            n_removed = initial_count - mt.count_rows()
-            if n_removed > 0:
-                logger.warning(
-                    f"Removed {n_removed} variants due to allele mismatch."
-                )
 
-    n_shared_loci = mt.count_rows()
-    logger.info(f"Found {n_shared_loci} loci in common to use for PRS.")
+    if include_n_shared_loci:
+        n_shared_loci = mt.count_rows()
+        logger.info(f"Found {n_shared_loci} loci in common to use for PRS.")
 
     with _log_timing("Calculating per-variant dosage", detailed_timings):
         mt = mt.annotate_entries(dosage=_calculate_dosage(mt))
@@ -262,10 +256,11 @@ def calculate_prs_batch(
     weights_map: typing.Dict[str, hl.Table],
     vds: hl.vds.VariantDataset,
     samples_to_keep: typing.Optional[typing.Any] = None,
+    weight_col_name: str = 'weight',
+    log_transform_weight: bool = False,
     strict_allele_match: bool = True,
+    include_n_shared_loci: bool = False,
     sample_id_col: str = 'person_id',
-    output_path: typing.Optional[str] = None,
-    overwrite_output: bool = True,
     detailed_timings: bool = True
 ) -> hl.Table:
     """
@@ -300,9 +295,18 @@ def calculate_prs_batch(
         A Variant Dataset object containing the genetic data.
     samples_to_keep : hail.Table, list, set, tuple, int, or str, optional
         A collection of sample IDs to keep.
+    weight_col_name : str, default 'weight'
+        The name of the column in `weights_table` that contains the effect
+        weights.
+    log_transform_weight : bool, default False
+        If True, applies a natural log transformation to the weight column.
+        This should be used when weights are provided as odds ratios (OR).
     strict_allele_match : bool, default True
         If True, validates that one of the alleles from weight table is the
         reference and the other is a valid alternate allele in the VDS.
+    include_n_shared_loci : bool, default False
+        If True, includes a column for each score with the total number of
+        shared loci used. Note that this option can impact performance.
     sample_id_col : str, default 'person_id'
         The desired name for the sample ID column in the final output table.
     detailed_timings : bool, default True
@@ -315,7 +319,9 @@ def calculate_prs_batch(
         column for the number of shared loci for each score.
 
     """
-    logger.info(f"Starting batch PRS calculation for {len(weights_map)} scores...")
+    logger.info(
+        f"Starting batch PRS calculation for {len(weights_map)} scores..."
+    )
 
     if samples_to_keep is not None:
         with _log_timing("Filtering to specified samples", detailed_timings):
@@ -327,16 +333,15 @@ def calculate_prs_batch(
     with _log_timing("Preparing all weights tables", detailed_timings):
         for score_name, weights_table in weights_map.items():
             prepared_table = _validate_and_prepare_weights_table(
-                weights_table, 'weight', False
+                weights_table, weight_col_name, log_transform_weight
             )
             prepared_weights[score_name] = prepared_table
             all_loci.append(prepared_table.key_by('locus').select())
 
     with _log_timing("Filtering VDS to all variants", detailed_timings):
         loci_to_keep = hl.Table.union(*all_loci).key_by('locus')
-        logger.info(
-            f"Found {loci_to_keep.count()} total unique loci across all scores."
-        )
+        count = loci_to_keep.count()
+        logger.info(f"Found {count} total unique loci across all scores.")
         mt = vds.variant_data.semi_join_rows(loci_to_keep)
 
     with _log_timing("Annotating variants with all weights", detailed_timings):
@@ -346,53 +351,112 @@ def calculate_prs_batch(
         }
         mt = mt.annotate_rows(**annotation_exprs)
 
-    if strict_allele_match:
-        with _log_timing(
-            "Performing strict allele match for all scores", detailed_timings
-        ):
-            vds_alleles = hl.set(mt.alleles)
-            ref_allele = mt.alleles[0]
-            new_annotations = {}
+    if include_n_shared_loci:
+        logger.info("Calculating scores and n_shared_loci.")
+        if strict_allele_match:
+            with _log_timing("Flagging valid loci", detailed_timings):
+                vds_alleles = hl.set(mt.alleles)
+                ref_allele = mt.alleles[0]
+                validity_annotations = {}
+                for score_name in weights_map:
+                    weights_info = mt[f'weights_info_{score_name}']
+                    is_present = hl.is_defined(weights_info)
+                    effect = weights_info.effect_allele
+                    noneffect = weights_info.noneffect_allele
+                    is_valid_pair = (
+                        (
+                            (effect == ref_allele)
+                            & vds_alleles.contains(noneffect)
+                        ) | (
+                            (noneffect == ref_allele)
+                            & vds_alleles.contains(effect)
+                        )
+                    ) & (effect != noneffect)
+                    validity_annotations[f'{score_name}_is_valid'] = hl.if_else(
+                        is_present, is_valid_pair, False
+                    )
+                mt = mt.annotate_rows(**validity_annotations)
+
+        with _log_timing("Pre-calculating n_shared_loci", detailed_timings):
+            counts_by_score = mt.aggregate_rows(
+                hl.struct(**{
+                    f'{score_name}_n_loci': hl.agg.count_where(
+                        mt[f'{score_name}_is_valid']
+                    )
+                    for score_name in weights_map
+                })
+            )
+
+        with _log_timing("Calculating PRS scores", detailed_timings):
+            aggregators = {}
             for score_name in weights_map:
                 weights_info = mt[f'weights_info_{score_name}']
-                effect = weights_info.effect_allele
-                noneffect = weights_info.noneffect_allele
-                is_valid_pair = (
-                    ((effect == ref_allele) & vds_alleles.contains(noneffect)) |
-                    ((noneffect == ref_allele) & vds_alleles.contains(effect))
-                ) & (effect != noneffect)
-                new_annotations[f'weights_info_{score_name}'] = hl.if_else(
-                    is_valid_pair,
-                    weights_info,
-                    hl.missing(weights_info.dtype)
+                variant_filter = mt[f'{score_name}_is_valid']
+                dosage_expr = _calculate_dosage(mt, score_name)
+                aggregators[f'{score_name}_prs'] = hl.agg.filter(
+                    variant_filter,
+                    hl.agg.sum(dosage_expr * weights_info.weight)
                 )
-            mt = mt.annotate_rows(**new_annotations)
+            mt = mt.annotate_cols(**aggregators)
 
-    with _log_timing("Calculating all PRS scores simultaneously", detailed_timings):
-        aggregators = {}
-        for score_name in weights_map:
-            weights_info = mt[f'weights_info_{score_name}']
-            variant_filter = hl.is_defined(weights_info)
-            dosage_expr = _calculate_dosage(mt, score_name)
-            aggregators[f'{score_name}_prs'] = hl.agg.filter(
-                variant_filter,
-                hl.agg.sum(dosage_expr * weights_info.weight)
+        logger.info("Finalizing batch PRS table...")
+        prs_table = mt.cols()
+        final_select_exprs = {}
+        for score_name in weights_map.keys():
+            final_select_exprs[score_name] = prs_table[f'{score_name}_prs']
+            final_select_exprs[f'{score_name}_n_loci'] = (
+                counts_by_score[f'{score_name}_n_loci']
             )
-            aggregators[f'{score_name}_n_loci'] = hl.agg.count_where(
-                variant_filter
-            )
-        mt = mt.annotate_cols(**aggregators)
+        prs_table = prs_table.select(**final_select_exprs)
 
-    logger.info("Finalizing batch PRS table...")
-    prs_table = mt.cols()
-    final_select_exprs = {}
-    for score_name in weights_map.keys():
-        final_select_exprs[score_name] = prs_table[f'{score_name}_prs']
-        final_select_exprs[f'{score_name}_n_loci'] = prs_table[
-            f'{score_name}_n_loci'
-        ]
-    prs_table = prs_table.select(**final_select_exprs)
+    else:
+        logger.info("Calculating scores only (n_shared_loci not requested).")
+        if strict_allele_match:
+            with _log_timing("Performing strict allele match", detailed_timings):
+                vds_alleles = hl.set(mt.alleles)
+                ref_allele = mt.alleles[0]
+                new_annotations = {}
+                for score_name in weights_map:
+                    weights_info = mt[f'weights_info_{score_name}']
+                    effect = weights_info.effect_allele
+                    noneffect = weights_info.noneffect_allele
+                    is_valid_pair = (
+                        (
+                            (effect == ref_allele)
+                            & vds_alleles.contains(noneffect)
+                        ) | (
+                            (noneffect == ref_allele)
+                            & vds_alleles.contains(effect)
+                        )
+                    ) & (effect != noneffect)
+                    new_annotations[f'weights_info_{score_name}'] = hl.if_else(
+                        is_valid_pair,
+                        weights_info,
+                        hl.missing(weights_info.dtype)
+                    )
+                mt = mt.annotate_rows(**new_annotations)
+
+        with _log_timing("Calculating PRS scores", detailed_timings):
+            aggregators = {}
+            for score_name in weights_map:
+                weights_info = mt[f'weights_info_{score_name}']
+                variant_filter = hl.is_defined(weights_info)
+                dosage_expr = _calculate_dosage(mt, score_name)
+                aggregators[f'{score_name}_prs'] = hl.agg.filter(
+                    variant_filter,
+                    hl.agg.sum(dosage_expr * weights_info.weight)
+                )
+            mt = mt.annotate_cols(**aggregators)
+
+        logger.info("Finalizing batch PRS table...")
+        prs_table = mt.cols()
+        prs_table = prs_table.select(
+            *[f'{s}_prs' for s in weights_map.keys()]
+        )
+        prs_table = prs_table.rename(
+            {f'{s}_prs': s for s in weights_map.keys()}
+        )
+
     prs_table = prs_table.rename({'s': sample_id_col})
-
     logger.info("Batch PRS calculation complete.")
     return prs_table
