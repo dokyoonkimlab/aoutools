@@ -1,7 +1,9 @@
-import os
+"""Reader for PRS weights files"""
+
 import typing
 import logging
 import hail as hl
+import hailtop.fs as hfs
 from ._utils import (
     _stage_local_file_to_gcs,
     _standardize_chromosome_column,
@@ -28,19 +30,23 @@ def _validate_alleles(table: hl.Table) -> hl.Table:
         A table with invalid allele rows removed.
     """
     logger.info("Validating allele columns for non-ACGT characters...")
+
     dna_regex = '^[ACGT]+$'
     initial_count = table.count()
+
     table = table.filter(
         hl.str(table.effect_allele).matches(dna_regex) &
         hl.str(table.noneffect_allele).matches(dna_regex)
     )
     final_count = table.count()
+
     n_removed = initial_count - final_count
     if n_removed > 0:
         logger.warning(
-            f"Removed {n_removed} variants with invalid alleles (non-ACGT "
-            f"characters found)."
+            "Removed %d variants with invalid alleles (non-ACGT characters found).",
+            n_removed
         )
+
     return table
 
 
@@ -55,8 +61,8 @@ def _check_duplicated_ids(table: hl.Table, file_path: str = "input") -> None:
     Parameters
     ----------
     table : hail.Table
-        The input table to check. It is expected to have 'chr', 'pos',
-        'noneffect_allele', and 'effect_allele' columns.
+        The input table to check. It must contain the fields 'chr', 'pos',
+        'noneffect_allele', and 'effect_allele'.
     file_path : str, optional
         The source file path, used for a more informative error message.
         Defaults to "input".
@@ -66,20 +72,25 @@ def _check_duplicated_ids(table: hl.Table, file_path: str = "input") -> None:
     ValueError
         If duplicate variants are found in the table.
     """
-    logger.info("Checking for duplicate variants based on chr, pos, and alleles...")
+    logger.info(
+        "Checking for duplicate variants based on chr, pos, and alleles..."
+    )
+
     table_with_id = table.annotate(
-        _variant_id=hl.str('_').join([
+        variant_id=hl.str('_').join([
             table.chr, hl.str(table.pos), table.noneffect_allele,
             table.effect_allele
         ])
     )
+
     id_counts_table = table_with_id.group_by('_variant_id').aggregate(
         n=hl.agg.count()
     )
+
     duplicate_variants = id_counts_table.filter(id_counts_table.n > 1)
     if duplicate_variants.count() > 0:
         example_duplicates = duplicate_variants.take(5)
-        formatted_examples = [d._variant_id for d in example_duplicates]
+        formatted_examples = [d.variant_id for d in example_duplicates]
         raise ValueError(
             f"Duplicate variants found in '{file_path}'. Examples of "
             f"duplicate IDs: {formatted_examples}."
@@ -114,20 +125,33 @@ def _process_prs_weights_table(
     -------
     hail.Table
         The fully processed and validated Hail Table.
+
+    Raises
+    ------
+    ValueError
+        If the table is empty after filtering for missing weights, or if
+        duplicate variants (defined by chromosome, position, and alleles)
+        are found in the table.
     """
     if validate_alleles:
         table = _validate_alleles(table)
+
     table = _standardize_chromosome_column(table)
     table = table.filter(hl.is_defined(table.weight))
+
     filtered_row_count = table.count()
     if filtered_row_count == 0:
         raise ValueError(
             f"Input file '{file_path}' is empty or all variants were "
             f"filtered out due to missing weights or invalid alleles."
         )
+
     _check_duplicated_ids(table, file_path=file_path)
+
     logger.info(
-        f"Successfully loaded {filtered_row_count} variants from {file_path}."
+        "Successfully loaded %d variants from %s.",
+        filtered_row_count,
+        file_path
     )
     return table
 
@@ -166,8 +190,16 @@ def _read_prs_weights_noheader(
     -------
     hail.Table
         The processed Hail Table.
+
+    Raises
+    ------
+    ValueError
+        If `column_map` contains invalid indices (e.g., non-1-based or
+        duplicates), if the table is empty after filtering for missing
+        weights, or if duplicate variants are found.
     """
-    logger.info(f"Importing file (no header): '{file_path}'")
+    logger.info("Importing file (no header): '%s'", file_path)
+
     indices = list(column_map.values())
     if any(i < 1 for i in indices):
         raise ValueError(
@@ -176,10 +208,16 @@ def _read_prs_weights_noheader(
         )
     if len(indices) != len(set(indices)):
         raise ValueError("Duplicate column indices provided in column_map.")
+
     table = hl.import_table(
-        file_path, delimiter=delimiter, no_header=True,
-        min_partitions=min_partitions, comment='#'
+        file_path,
+        delimiter=delimiter,
+        no_header=True,
+        min_partitions=min_partitions,
+        comment='#',
+        missing='NA'
     )
+
     standard_cols_exprs = {
         'chr': table[f"f{column_map['chr'] - 1}"],
         'pos': hl.int32(table[f"f{column_map['pos'] - 1}"]),
@@ -187,6 +225,7 @@ def _read_prs_weights_noheader(
         'noneffect_allele': table[f"f{column_map['noneffect_allele'] - 1}"],
         'weight': hl.float64(table[f"f{column_map['weight'] - 1}"])
     }
+
     other_cols_exprs = {}
     if keep_other_cols:
         used_f_fields = {f'f{i - 1}' for i in indices}
@@ -196,6 +235,7 @@ def _read_prs_weights_noheader(
         other_cols_exprs = {
             new: table[old] for new, old in zip(new_names, other_fields)
         }
+
     table = table.select(**standard_cols_exprs, **other_cols_exprs)
     return _process_prs_weights_table(table, file_path, validate_alleles)
 
@@ -234,34 +274,51 @@ def _read_prs_weights_header(
     -------
     hail.Table
         The processed Hail Table.
+
+    Raises
+    ------
+    ValueError
+        If `column_map` contains duplicate names, if specified columns
+        are not in the file's header, if the table is empty after
+        filtering for missing weights, or if duplicate variants are found.
     """
-    logger.info(f"Importing file (with header): '{file_path}'")
+    logger.info("Importing file (with header): '%s'", file_path)
+
     col_names = list(column_map.values())
     if len(col_names) != len(set(col_names)):
         raise ValueError("Duplicate column names provided in column_map.")
+
     types = {
         column_map['chr']: hl.tstr, column_map['pos']: hl.tint32,
         column_map['effect_allele']: hl.tstr,
         column_map['noneffect_allele']: hl.tstr,
         column_map['weight']: hl.tfloat64,
     }
+
     table = hl.import_table(
-        file_path, delimiter=delimiter, no_header=False,
-        min_partitions=min_partitions, types=types, comment='#', missing='NA'
+        file_path, delimiter=delimiter,
+        no_header=False,
+        min_partitions=min_partitions,
+        types=types,
+        comment='#',
+        missing='NA'
     )
     missing = set(col_names) - set(table.row)
     if missing:
         raise ValueError(f"Required columns not in header: {missing}")
+
     standard_exprs = {
         'chr': table[column_map['chr']], 'pos': table[column_map['pos']],
         'effect_allele': table[column_map['effect_allele']],
         'noneffect_allele': table[column_map['noneffect_allele']],
         'weight': table[column_map['weight']]
     }
+
     other_exprs = {}
     if keep_other_cols:
         other_fields = [f for f in table.row if f not in col_names]
         other_exprs = {f: table[f] for f in other_fields}
+
     table = table.select(**standard_exprs, **other_exprs)
     return _process_prs_weights_table(table, file_path, validate_alleles)
 
@@ -313,8 +370,20 @@ def read_prs_weights(
     -------
     hail.Table
         A Hail Table with standardized columns.
+
+    Raises
+    ------
+    ValueError
+        If `column_map` is missing required keys, if the input file is empty,
+        or if duplicate variants are found in the weights file.
+    TypeError
+        If the value types in `column_map` do not match the `header`
+        setting (e.g., strings for `header=True`, integers for `header=False`).
+    FileNotFoundError
+        If a local `file_path` is provided and the file does not exist.
     """
     gcs_path = _stage_local_file_to_gcs(file_path, sub_dir='temp_prs_data')
+
     required_keys = {
         'chr', 'pos', 'effect_allele', 'noneffect_allele', 'weight'
     }
@@ -322,31 +391,38 @@ def read_prs_weights(
         missing = required_keys - set(column_map.keys())
         raise ValueError(f"column_map is missing required keys: {missing}")
     try:
-        if hl.hadoop_stat(gcs_path)['size_bytes'] == 0:
+        if hfs.stat(gcs_path).size == 0:
             raise ValueError(f"Input file '{file_path}' is empty.")
     except hl.utils.java.FatalError as e:
         if 'Is a directory' not in str(e):
-            raise e
+            raise
+
     if header:
         if not all(isinstance(v, str) for v in column_map.values()):
             raise TypeError(
                 "With header=True, column_map values must be strings."
             )
         return _read_prs_weights_header(
-            file_path=gcs_path, column_map=column_map, delimiter=delimiter,
+            file_path=gcs_path,
+            column_map=column_map,
+            delimiter=delimiter,
             keep_other_cols=keep_other_cols,
-            min_partitions=min_partitions, validate_alleles=validate_alleles
+            min_partitions=min_partitions,
+            validate_alleles=validate_alleles,
         )
-    else:
-        if not all(isinstance(v, int) for v in column_map.values()):
-            raise TypeError(
-                "With header=False, column_map values must be integers."
-            )
-        return _read_prs_weights_noheader(
-            file_path=gcs_path, column_map=column_map, delimiter=delimiter,
-            keep_other_cols=keep_other_cols,
-            min_partitions=min_partitions, validate_alleles=validate_alleles
+
+    if not all(isinstance(v, int) for v in column_map.values()):
+        raise TypeError(
+            "With header=False, column_map values must be integers."
         )
+    return _read_prs_weights_noheader(
+        file_path=gcs_path,
+        column_map=column_map,
+        delimiter=delimiter,
+        keep_other_cols=keep_other_cols,
+        min_partitions=min_partitions,
+        validate_alleles=validate_alleles,
+    )
 
 
 def read_prscs(file_path: str, **kwargs) -> hl.Table:
@@ -379,7 +455,7 @@ def read_prscs(file_path: str, **kwargs) -> hl.Table:
     hail.Table
         A processed Hail Table of the PRS-CS weights.
     """
-    logger.info(f"Reading PRS-CS file: {file_path}")
+    logger.info("Reading PRS-CS file: %s", file_path)
     prscs_map = {
         'chr': 1, 'pos': 3, 'effect_allele': 4,
         'noneffect_allele': 5, 'weight': 6

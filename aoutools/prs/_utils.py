@@ -1,9 +1,12 @@
-import hail as hl
+"""Utility functions for Hail data processing"""
+
+import os
 import typing
 import logging
-import os
-import time
+from time import perf_counter
 from contextlib import contextmanager
+import hail as hl
+import hailtop.fs as hfs
 
 # Configure a logger for module-level use.
 logger = logging.getLogger(__name__)
@@ -24,12 +27,12 @@ def _log_timing(description: str, enabled: bool = True):
     if not enabled:
         yield
         return
-    start_time = time.time()
-    logger.info(f"{description}...")
+
+    start_time = perf_counter()
+    logger.info("%s...", description)
     yield
-    end_time = time.time()
-    duration = end_time - start_time
-    logger.info(f"{description} finished in {duration:.2f} seconds.")
+    duration = perf_counter() - start_time
+    logger.info("%s finished in %.2f seconds.", description, duration)
 
 
 def _stage_local_file_to_gcs(file_path: str, sub_dir: str) -> str:
@@ -54,28 +57,41 @@ def _stage_local_file_to_gcs(file_path: str, sub_dir: str) -> str:
     -------
     str
         A GCS path to the file that Hail can access.
+
+    Raises
+    ------
+    FileNotFoundError
+        If a local `file_path` is provided and the file does not exist.
+    EnvironmentError
+        If a local file is provided and the `WORKSPACE_BUCKET` environment
+        variable is not set.
     """
     if file_path.startswith('gs://'):
         return file_path
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"Local file does not exist: {file_path}")
+
     workspace_bucket = os.getenv('WORKSPACE_BUCKET')
+    # Fail fast if the required environment variable is not set.
     if not workspace_bucket:
-        # For local testing outside AoU, default to a local temp dir
-        workspace_bucket = '/tmp'
-        logger.warning(
-            "WORKSPACE_BUCKET not set. Using local temp directory for staging."
+        raise EnvironmentError(
+            "The 'WORKSPACE_BUCKET' environment variable is not set. "
+            "This is required to stage local files to GCS."
         )
     gcs_path = os.path.join(
         workspace_bucket, 'data', sub_dir, os.path.basename(file_path)
     )
-    if hl.hadoop_exists(gcs_path):
-        logger.info(f"File already exists at {gcs_path}, skipping copy.")
+
+    if hfs.exists(gcs_path):
+        logger.info("File already exists at %s, skipping copy.", gcs_path)
     else:
         logger.info(
-            f"Local file detected. Staging '{file_path}' to '{gcs_path}'..."
+            "Local file detected. Staging '%s' to '%s'...",
+            file_path,
+            gcs_path,
         )
-        hl.hadoop_copy(f'file://{os.path.abspath(file_path)}', gcs_path)
+        hfs.copy(f'file://{os.path.abspath(file_path)}', gcs_path)
+
     return gcs_path
 
 
@@ -100,10 +116,12 @@ def _standardize_chromosome_column(table: hl.Table) -> hl.Table:
     """
     if table.count() == 0:
         return table
+
     sample_chr = table.select('chr').take(1)[0].chr
     if not str(sample_chr).startswith('chr'):
         logger.info("Adding 'chr' prefix to chromosome column.")
         table = table.annotate(chr=hl.str('chr') + table.chr)
+
     return table
 
 
@@ -127,9 +145,15 @@ def _prepare_samples_to_keep(
     -------
     hail.Table
         A Hail Table keyed by 's' containing the sample IDs as strings.
+
+    Raises
+    ------
+    TypeError
+        If the input `samples` object is not one of the supported types.
     """
     if isinstance(samples, hl.Table):
         return samples
+
     sample_list = []
     if isinstance(samples, (int, float, str)):
         sample_list = [str(samples)]
@@ -137,6 +161,7 @@ def _prepare_samples_to_keep(
         sample_list = [str(s) for s in samples]
     else:
         raise TypeError(f"Unsupported type for samples_to_keep: {type(samples)}.")
+
     samples_ht = hl.Table.parallelize(
         [{'s': s} for s in sample_list], hl.tstruct(s=hl.tstr)
     )
