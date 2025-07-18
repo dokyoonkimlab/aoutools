@@ -4,6 +4,7 @@ import typing
 import logging
 import hail as hl
 import hailtop.fs as hfs
+from aoutools._utils.helpers import SimpleTimer
 from ._utils import (
     _stage_local_file_to_gcs,
     _standardize_chromosome_column,
@@ -323,10 +324,38 @@ def _read_prs_weights_header(
     return _process_prs_weights_table(table, file_path, validate_alleles)
 
 
+def _validate_column_map_type(column_map: dict, header: bool):
+    """
+    Validate that all values in `column_map` are of the expected type based on
+    `header`.
+
+    Parameters
+    ----------
+    column_map : dict
+        Dictionary mapping standard keys to column names or indices.
+    header : bool
+        Indicates if the input file has a header row.
+        - If True, all values in `column_map` must be strings (column names).
+        - If False, all values must be integers (1-based column indices).
+
+    Raises
+    ------
+    TypeError
+        If any value in `column_map` does not match the expected type based on
+        `header`.
+    """
+    expected_type = str if header else int
+    if not all(isinstance(v, expected_type) for v in column_map.values()):
+        raise TypeError(
+            f"With header={header}, column_map values must be "
+            f"{expected_type.__name__}s."
+        )
+
+
 def read_prs_weights(
     file_path: str,
     header: bool,
-    column_map: dict,
+    column_map: dict[str, typing.Union[str, int]],
     delimiter: str = '\t',
     keep_other_cols: bool = False,
     min_partitions: typing.Optional[int] = None,
@@ -359,7 +388,7 @@ def read_prs_weights(
         Example for header=False: {'chr': 1, 'pos': 2, ...}
     delimiter : str, default '\t'
         Field delimiter.
-    keep_other_cols: bool, default False
+    keep_other_cols : bool, default False
         If True, all columns not specified in `column_map` are preserved.
     min_partitions : int, optional
         A Hail-specific parameter to hint at the minimum number of partitions.
@@ -382,27 +411,30 @@ def read_prs_weights(
     FileNotFoundError
         If a local `file_path` is provided and the file does not exist.
     """
-    gcs_path = _stage_local_file_to_gcs(file_path, sub_dir='temp_prs_data')
+    timer = SimpleTimer()
+    with timer:
+        gcs_path = _stage_local_file_to_gcs(file_path, sub_dir='temp_prs_data')
 
-    required_keys = {
-        'chr', 'pos', 'effect_allele', 'noneffect_allele', 'weight'
-    }
-    if not required_keys.issubset(column_map.keys()):
-        missing = required_keys - set(column_map.keys())
-        raise ValueError(f"column_map is missing required keys: {missing}")
-    try:
-        if hfs.stat(gcs_path).size == 0:
-            raise ValueError(f"Input file '{file_path}' is empty.")
-    except hl.utils.java.FatalError as e:
-        if 'Is a directory' not in str(e):
-            raise
+        required_keys = {
+            'chr', 'pos', 'effect_allele', 'noneffect_allele', 'weight'
+        }
+        if not required_keys.issubset(column_map.keys()):
+            missing = required_keys - set(column_map.keys())
+            raise ValueError(f"column_map is missing required keys: {missing}")
+        try:
+            if hfs.stat(gcs_path).size == 0:
+                raise ValueError(f"Input file '{file_path}' is empty.")
+        except hl.utils.java.FatalError as e:
+            if 'Is a directory' not in str(e):
+                raise
 
-    if header:
-        if not all(isinstance(v, str) for v in column_map.values()):
-            raise TypeError(
-                "With header=True, column_map values must be strings."
-            )
-        return _read_prs_weights_header(
+        _validate_column_map_type(column_map, header)
+
+        parser_func = (
+            _read_prs_weights_header if header else _read_prs_weights_noheader
+        )
+
+        result_table = parser_func(
             file_path=gcs_path,
             column_map=column_map,
             delimiter=delimiter,
@@ -411,18 +443,12 @@ def read_prs_weights(
             validate_alleles=validate_alleles,
         )
 
-    if not all(isinstance(v, int) for v in column_map.values()):
-        raise TypeError(
-            "With header=False, column_map values must be integers."
-        )
-    return _read_prs_weights_noheader(
-        file_path=gcs_path,
-        column_map=column_map,
-        delimiter=delimiter,
-        keep_other_cols=keep_other_cols,
-        min_partitions=min_partitions,
-        validate_alleles=validate_alleles,
+    logger.info(
+        "Weights file reading complete. Total time: %.2f seconds.",
+        timer.duration
     )
+
+    return result_table
 
 
 def read_prscs(file_path: str, **kwargs) -> hl.Table:
