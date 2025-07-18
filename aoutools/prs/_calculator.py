@@ -197,9 +197,6 @@ def _calculate_prs_chunk(
         A table with one row per sample containing the PRS value and, optionally,
         the number of shared loci (`n_shared_loci`) if requested.
     """
-    # logger.info("Starting PRS calculation for a chunk...")
-
-    # logger.info("Planning: Filtering VDS to variants in weights table chunk...")
     with _log_timing(
         "Planning: Filtering VDS to variants in weights table chunk",
         detailed_timings,
@@ -264,7 +261,6 @@ def _calculate_prs_chunk(
     prs_table = prs_table.select(**final_cols)
     prs_table = prs_table.rename({'s': sample_id_col})
 
-    logger.info("Chunk PRS calculation plan complete.")
     return prs_table
 
 

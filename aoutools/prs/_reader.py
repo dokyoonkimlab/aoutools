@@ -83,7 +83,7 @@ def _check_duplicated_ids(table: hl.Table, file_path: str = "input") -> None:
         ])
     )
 
-    id_counts_table = table_with_id.group_by('_variant_id').aggregate(
+    id_counts_table = table_with_id.group_by('variant_id').aggregate(
         n=hl.agg.count()
     )
 
