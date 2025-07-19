@@ -224,15 +224,15 @@ def _calculate_prs_chunk(
         with _log_timing(
                 "Planning: Performing strict allele match", detailed_timings
         ):
-            vds_alleles = hl.set(mt.alleles)
+            alt_alleles = hl.set(mt.alleles[1:])
             ref_allele = mt.alleles[0]
             effect = mt.weights_info.effect_allele
             noneffect = mt.weights_info.noneffect_allele
             is_valid_pair = (
                 (
-                    (effect == ref_allele) & vds_alleles.contains(noneffect)
+                    (effect == ref_allele) & alt_alleles.contains(noneffect)
                 ) | (
-                    (noneffect == ref_allele) & vds_alleles.contains(effect)
+                    (noneffect == ref_allele) & alt_alleles.contains(effect)
                 )
             ) & (effect != noneffect)
             mt = mt.filter_rows(is_valid_pair)
@@ -251,17 +251,21 @@ def _calculate_prs_chunk(
         "Planning: Aggregating scores per sample", detailed_timings
     ):
         mt = mt.annotate_cols(
-            prs_score=hl.agg.sum(mt.dosage * mt.weights_info.weight)
+            prs=hl.agg.sum(mt.dosage * mt.weights_info.weight)
         )
 
     prs_table = mt.cols()
-    final_cols = {'prs': prs_table.prs_score}
+    final_cols = {'prs': prs_table.prs}
+
     if include_n_shared_loci:
         final_cols['n_shared_loci'] = n_shared_loci
+
     prs_table = prs_table.select(**final_cols)
     prs_table = prs_table.rename({'s': sample_id_col})
 
-    return prs_table
+    # Dropping all global annotations by passing no arguments to select_globals().
+    # This is intentional to reduce memory usage.
+    return prs_table.select_globals()
 
 
 def calculate_prs(
@@ -441,7 +445,7 @@ def calculate_prs(
 
             with _log_timing(
                 f"Aggregating chunks and exporting to {output_path}",
-                detailed_timings,
+                True,
             ):
                 final_prs_table = partial_results[0].key_by(sample_id_col)
                 for i in range(1, len(partial_results)):
@@ -488,6 +492,7 @@ def calculate_prs(
         "PRS calculation complete. Total time: %.2f seconds.", timer.duration
     )
     return output_path
+
 
 # def calculate_prs(
 #     weights_table: hl.Table,
@@ -1167,3 +1172,85 @@ def calculate_prs(
 #     prs_table = prs_table.rename({'s': sample_id_col})
 #     logger.info("Batch PRS calculation complete.")
 #     return prs_table
+
+# def _calculate_prs_chunk(
+#     weights_table: hl.Table,
+#     vds: hl.vds.VariantDataset,
+#     strict_allele_match: bool,
+#     include_n_shared_loci: bool,
+#     sample_id_col: str,
+#     detailed_timings: bool,
+#     split_multi: bool = False,
+# ) -> hl.Table:
+#     with _log_timing(
+#         "Planning: Filtering VDS to variants in weights table chunk",
+#         detailed_timings,
+#     ):
+#         intervals_ht = (
+#             weights_table.select(
+#                 locus_interval=hl.interval(
+#                     weights_table.locus,
+#                     weights_table.locus,
+#                     includes_end=True
+#                 )
+#             )
+#             .key_by('locus_interval')
+#             .distinct()
+#         )
+#         mt = hl.vds.filter_intervals(vds, intervals_ht, keep=True).variant_data
+
+#     if split_multi:
+#         with _log_timing("Splitting multi-allelic variants in chunk", detailed_timings):
+#             mt = hl.vds.split_multi(mt)
+
+#     with _log_timing(
+#         "Planning: Annotating variants with weights", detailed_timings
+#     ):
+#         mt = mt.annotate_rows(weights_info=weights_table[mt.locus])
+#         mt = mt.filter_rows(hl.is_defined(mt.weights_info))
+
+#     if strict_allele_match:
+#         with _log_timing(
+#                 "Planning: Performing strict allele match", detailed_timings
+#         ):
+#             ref_allele = mt.alleles[0]
+#             effect = mt.weights_info.effect_allele
+#             noneffect = mt.weights_info.noneffect_allele
+#             alt_alleles = hl.set(mt.alleles[1:])
+
+#             is_valid_pair = (
+#                 ((effect == ref_allele) & alt_alleles.contains(noneffect)) |
+#                 ((noneffect == ref_allele) & alt_alleles.contains(effect))
+#             ) & (effect != noneffect)
+
+#             mt = mt.filter_rows(is_valid_pair)
+
+#     with _log_timing(
+#         "Planning: Calculating per-variant dosage", detailed_timings
+#     ):
+#         if split_multi:
+#             # Biallelic after splitting: use built-in n_alt_alleles()
+#             mt = mt.annotate_entries(dosage=mt.GT.n_alt_alleles())
+#         else:
+#             # For multis, fallback to custom dosage calculation (your existing _calculate_dosage)
+#             mt = mt.annotate_entries(dosage=_calculate_dosage(mt))
+
+#     with _log_timing(
+#         "Planning: Aggregating scores per sample", detailed_timings
+#     ):
+#         mt = mt.annotate_cols(
+#             prs_score=hl.agg.sum(mt.dosage * mt.weights_info.weight)
+#         )
+
+#     prs_table = mt.cols()
+#     final_cols = {'prs': prs_table.prs_score}
+#     if include_n_shared_loci:
+#         with _log_timing("Computing shared loci count", detailed_timings):
+#             n_shared_loci = mt.count_rows()
+#             final_cols['n_shared_loci'] = n_shared_loci
+
+#     prs_table = prs_table.select(**final_cols)
+#     prs_table = prs_table.rename({'s': sample_id_col})
+
+#     return prs_table
+
