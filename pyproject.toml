@@ -27,6 +27,7 @@ classifiers = [
 ]
 dependencies = [
     "hail",
+    "pandas"
 ]
 
 [project.urls]

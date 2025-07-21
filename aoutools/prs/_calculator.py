@@ -7,6 +7,7 @@ from math import ceil
 from uuid import uuid4
 import hail as hl
 import hailtop.fs as hfs
+import pandas as pd
 from aoutools._utils.helpers import SimpleTimer
 from ._utils import (
     _log_timing,
@@ -272,6 +273,180 @@ def calculate_prs(
     weights_table: hl.Table,
     vds: hl.vds.VariantDataset,
     output_path: str,
+    chunk_size: int = 10000,
+    samples_to_keep: typing.Optional[typing.Any] = None,
+    weight_col_name: str = 'weight',
+    log_transform_weight: bool = False,
+    strict_allele_match: bool = True,
+    include_n_shared_loci: bool = False,
+    sample_id_col: str = 'person_id',
+    detailed_timings: bool = False,
+) -> typing.Optional[str]:
+    """
+    Calculates PRS by chunking weights, checkpointing each chunk, aggregating
+    the results, and exporting the final table to a text file.
+
+    This function is optimized for performance on the All of Us VDS, where
+    multi-allelic variants are not pre-split. It is compatible with different
+    VDS versions by handling both global ('GT') and local ('LGT'/'LA') genotype
+    encoding schemes.
+
+    Parameters
+    ----------
+    weights_table : hail.Table
+        A table of PRS weights. Must contain the following columns:
+        - 'chr': str
+        - 'pos': int32
+        - 'effect_allele': str
+        - 'noneffect_allele': str
+        - A column for the effect weight (float64), specified by
+          `weight_col_name`.
+    vds : hail.vds.VariantDataset
+        The Variant Dataset containing the genetic data.
+    output_path : str
+        A GCS path (starting with 'gs://') to write the final output file.
+    chunk_size : int, default 10000
+        The number of variants to include in each processing chunk.
+    samples_to_keep : hail.Table, list, set, tuple, int, or str, optional
+        A collection of sample IDs to keep. If provided, PRS will only be
+        calculated for these samples. Numeric IDs will be converted to strings.
+    weight_col_name : str, default 'weight'
+        The name of the column in `weights_table` that contains the effect
+        weights.
+    log_transform_weight : bool, default False
+        If True, applies a natural log transformation to the weight column. Use
+        this when weights are provided as odds ratios (OR), since the PRS model
+        assumes additive effects on the log-odds scale.
+    strict_allele_match : bool, default True
+        If True, validates that one of the alleles from weight table is the
+        reference and the other is a valid alternate allele in the VDS.
+    include_n_shared_loci : bool, default False
+        If True, adds a column 'n_shared_loci' with the total number of loci
+        shared between the weights table and the VDS. Note that this can impact
+        performance.
+    sample_id_col : str, default 'person_id'
+        The desired name for the sample ID column in the final output table.
+    detailed_timings : bool, default False
+        If True, logs the duration of each major computational step. Useful for
+        debugging performance bottlenecks.
+
+    Returns
+    -------
+    str or None
+        The path to the final output file. Returns None if no results are
+        generated. The output file is a tab-separated text file with the
+        following columns:
+        - A sample identifier column (named according to `sample_id_col`).
+        - 'prs': The calculated Polygenic Risk Score.
+        - 'n_shared_loci' (optional): The number of variants used to
+          calculate the score, included if `include_n_shared_loci` is True.
+
+    Raises
+    ------
+    ValueError
+        If `output_path` or `temp_path` are not valid GCS paths, or if the
+        `weights_table` is empty after validation.
+    """
+    timer = SimpleTimer()
+    with timer:
+        if not output_path.startswith('gs://'):
+            raise ValueError(
+                "The 'output_path' must be a Google Cloud Storage (GCS) "
+                "path, starting with 'gs://'."
+            )
+
+        logger.info(
+            "Starting chunked PRS calculation. Final result will be at: %s",
+            output_path,
+        )
+
+        if samples_to_keep is not None:
+            with _log_timing(
+                "Filtering to specified samples", detailed_timings
+            ):
+                samples_ht = _prepare_samples_to_keep(samples_to_keep)
+                vds = hl.vds.filter_samples(vds, samples_ht)
+
+        with _log_timing(
+            "Preparing and chunking full weights table", detailed_timings
+        ):
+            full_weights_table = _validate_and_prepare_weights_table(
+                weights_table, weight_col_name, log_transform_weight
+            )
+            total_variants = full_weights_table.count()
+            if total_variants == 0:
+                raise ValueError(
+                    "Weights table is empty after validation."
+                )
+
+            n_chunks = ceil(total_variants / chunk_size)
+            logger.info(
+                "Total variants: %d, Number of chunks: %d",
+                total_variants,
+                n_chunks,
+            )
+
+            full_weights_table = full_weights_table.add_index()
+            full_weights_table = full_weights_table.annotate(
+                chunk_id=hl.int(full_weights_table.idx / chunk_size)
+            )
+            full_weights_table = full_weights_table.key_by('locus')
+
+        partial_dfs = []
+        for i in range(n_chunks):
+            with _log_timing(
+                f"Processing chunk {i + 1}/{n_chunks}",
+                True,
+            ):
+                # Use .persist() to avoid recomputation of the same chunk in
+                # _calculate_prs_chunk, specifically during:
+                # 1. Creation of interval_ht
+                # 2. Annotating rows with PRS weight information
+                weights_chunk = full_weights_table.filter(
+                    full_weights_table.chunk_id == i
+                ).persist()
+
+                chunk_prs_table = _calculate_prs_chunk(
+                    weights_table=weights_chunk,
+                    vds=vds,
+                    strict_allele_match=strict_allele_match,
+                    include_n_shared_loci=include_n_shared_loci,
+                    sample_id_col=sample_id_col,
+                    detailed_timings=detailed_timings,
+                )
+
+                partial_dfs.append(chunk_prs_table.to_pandas())
+
+        if not partial_dfs:
+            logger.warning("No PRS results were generated.")
+            return None
+
+        # Aggregate the results from all chunks in master node
+        with _log_timing(
+            f"Aggregating chunks and exporting to {output_path}",
+            True,
+        ):
+            combined_df = pd.concat(partial_dfs, ignore_index=True)
+            final_df = combined_df.groupby(sample_id_col).sum()
+
+        # Export the final pandas data frame to a csv file
+        with _log_timing(
+                f"Exporting final result to {output_path}", detailed_timings
+        ):
+            with hfs.open(output_path, 'w') as f:
+                final_df.to_csv(f, sep='\t', index=True, header=True)
+
+    # Report the total time using the duration captured by the context manager
+    logger.info(
+        "PRS calculation complete. Total time: %.2f seconds.", timer.duration
+    )
+    return output_path
+
+
+def calculate_prs2(
+    weights_table: hl.Table,
+    vds: hl.vds.VariantDataset,
+    output_path: str,
     temp_path: typing.Optional[str] = None,
     chunk_size: int = 10000,
     samples_to_keep: typing.Optional[typing.Any] = None,
@@ -492,7 +667,6 @@ def calculate_prs(
         "PRS calculation complete. Total time: %.2f seconds.", timer.duration
     )
     return output_path
-
 
 # def calculate_prs(
 #     weights_table: hl.Table,
