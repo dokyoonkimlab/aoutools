@@ -9,7 +9,11 @@ from ._reader import (
 # Import the main calculator functions from the internal _calculator.py module
 from ._calculator import (
     calculate_prs,
-    calculate_prs2
+)
+
+# Import the PRSConfig from the internal _config.py module
+from ._config import (
+    PRSConfig,
 )
 
 # Import the main calculator functions from the internal _calculator.py module
@@ -23,5 +27,5 @@ __all__ = [
     'read_prs_weights',
     'read_prscs',
     'calculate_prs',
-    'calculate_prs2',
+    'PRSConfig'
 ]

@@ -1,10 +1,8 @@
 """"PRS calculator"""
 
-import os
 import typing
 import logging
 from math import ceil
-from uuid import uuid4
 import hail as hl
 import hailtop.fs as hfs
 import pandas as pd
@@ -14,6 +12,7 @@ from ._utils import (
     _standardize_chromosome_column,
     _prepare_samples_to_keep,
 )
+from ._config import PRSConfig
 
 logger = logging.getLogger(__name__)
 
@@ -287,56 +286,37 @@ def _prepare_mt_non_split(
 def _calculate_prs_chunk(
     weights_table: hl.Table,
     vds: hl.vds.VariantDataset,
-    include_n_shared_loci: bool,
-    sample_id_col: str,
-    split_multi: bool,
-    ref_is_effect_allele: bool,
-    strict_allele_match: bool,
-    detailed_timings: bool,
+    config: PRSConfig,
 ) -> hl.Table:
     """
     Calculates a Polygenic Risk Score (PRS) for a single chunk of variants.
 
-    This function serves as the core computational engine for a single chunk of
-    a larger weights table, with an option to handle multi-allelic variants
-    by splitting them into bi-allelic representations.
+    This function serves as the core computational engine. It first filters the
+    VDS to a small genomic region based on the input `weights_table` chunk. It
+    then dispatches to the appropriate helper function to prepare a MatrixTable
+    based on the `split_multi` setting, and finally aggregates the scores.
+
 
     Parameters
     ----------
     weights_table : hail.Table
         A pre-filtered chunk of the main weights table, keyed by 'locus'.
     vds : hail.vds.VariantDataset
-        The Variant Dataset containing the genetic data for the cohort.
-    include_n_shared_loci : bool
-        If True, the output table will include a column with the total number
-        of loci used in the score calculation.
-    sample_id_col : str
-        The desired name for the sample ID column in the final output table.
-    split_multi : bool, default False
-        If True, splits multi-allelic variants in the VDS into bi-allelic
-        variants before calculation.
-    ref_is_effect_allele : bool, default False
-        If True, assumes the effect allele in the weights file is the reference
-        allele. This is only used when `split_multi` is True to ensure
-        correct allele ordering and weight direction.
-    strict_allele_match : bool, default True
-        This parameter is only used when `split_multi` is False. If True, it
-        performs a robust check to ensure that one allele from the weights
-        table is an exact match for the reference allele in the VDS, and that
-        the other allele is a valid alternate allele at that site. If False,
-        the check is skipped, and the join is based on the locus only, which is
-        not recommended.
-    detailed_timings : bool
-        If True, logs the duration of key computational steps.
+        The Variant Dataset containing the genetic data.
+    config : PRSConfig
+        A configuration object containing all settings for the calculation,
+        such as `split_multi` and `include_n_shared_loci`.
 
     Returns
     -------
     hail.Table
-        A Hail Table containing the partial PRS results for the chunk.
+        A Hail Table containing the partial PRS results for the chunk, with
+        columns for the sample ID, 'prs' score, and optionally
+        'n_shared_loci'.
     """
     with _log_timing(
         "Planning: Filtering VDS to variants in weights table chunk",
-        detailed_timings,
+        config.detailed_timings,
     ):
         intervals_ht = (
             weights_table.select(
@@ -351,19 +331,19 @@ def _calculate_prs_chunk(
         )
         vds = hl.vds.filter_intervals(vds, intervals_ht, keep=True)
 
-    if split_multi:
+    if config.split_multi:
         mt = _prepare_mt_split(
             vds=vds,
             weights_table=weights_table,
-            ref_is_effect_allele=ref_is_effect_allele,
-            detailed_timings=detailed_timings,
+            ref_is_effect_allele=config.ref_is_effect_allele,
+            detailed_timings=config.detailed_timings,
         )
     else:
         mt = _prepare_mt_non_split(
             vds=vds,
             weights_table=weights_table,
-            strict_allele_match=strict_allele_match,
-            detailed_timings=detailed_timings,
+            strict_allele_match=config.strict_allele_match,
+            detailed_timings=config.detailed_timings,
         )
 
     # Chunks aggregation
@@ -371,8 +351,8 @@ def _calculate_prs_chunk(
         prs=hl.agg.sum(mt.dosage * mt.weights_info.weight)
     ).cols()
 
-    if include_n_shared_loci:
-        with _log_timing("Computing shared loci count", detailed_timings):
+    if config.include_n_shared_loci:
+        with _log_timing("Computing shared loci count", config.detailed_timings):
             # Using hl.agg.count() within the `select_cols` block won't work
             # since homozygous reference are set to missing while `agg.count`
             # counts the number of rows for which that specific sample has a
@@ -382,7 +362,7 @@ def _calculate_prs_chunk(
             logger.info("%d loci in common in this chunk.", n_shared_loci)
             prs_table = prs_table.annotate(n_shared_loci=n_shared_loci)
 
-    prs_table = prs_table.rename({'s': sample_id_col})
+    prs_table = prs_table.rename({'s': config.sample_id_col})
     # Dropping all global annotations by passing no arguments to select_globals().
     # This is intentional to reduce memory usage.
     return prs_table.select_globals()
@@ -395,7 +375,42 @@ def _prepare_weights_for_chunking(
     chunk_size: typing.Optional[int],
     detailed_timings: bool,
 ) -> tuple[hl.Table, int]:
-    """Prepares the full weights table for chunking."""
+    """
+    Prepares and annotates a weights table for chunked processing.
+
+    This helper function takes the raw weights table, validates it, calculates
+    the number of chunks based on the `chunk_size`, and adds a `chunk_id`
+    column to each row. This prepares the table for iterative processing in
+    the main PRS calculation loop.
+
+    Parameters
+    ----------
+    weights_table : hail.Table
+        The raw input weights table from the user.
+    weight_col_name : str
+        The name of the column containing effect weights.
+    log_transform_weight : bool
+        If True, log-transforms the weight column.
+    chunk_size : int, optional
+        The desired number of variants per chunk. If None, the entire table
+        will be processed as a single chunk.
+    detailed_timings : bool
+        If True, logs the duration of this preparation step.
+
+    Returns
+    -------
+    tuple[hail.Table, int]
+        A tuple containing:
+        - The fully validated and prepared weights table, now annotated with a
+          `chunk_id` for each row.
+        - An integer representing the total number of chunks.
+
+    Raises
+    ------
+    ValueError
+        If the `weights_table` is empty after the initial validation and
+        filtering steps.
+    """
     with _log_timing(
         "Preparing and analyzing weights table", detailed_timings
     ):
@@ -430,13 +445,37 @@ def _process_chunks(
     full_weights_table: hl.Table,
     n_chunks: int,
     vds: hl.vds.VariantDataset,
-    config: dict,
+    config: PRSConfig,
 ) -> list[pd.DataFrame]:
-    """Processes each chunk and returns a list of Pandas DataFrames."""
+    """
+    Iteratively processes each chunk of the weights table.
+
+    This helper function orchestrates the main processing loop. It iterates
+    through the weights table chunk by chunk, calling the core
+    `_calculate_prs_chunk` engine for each one, and converts the partial
+    results into Pandas DataFrames for final aggregation.
+
+    Parameters
+    ----------
+    full_weights_table : hail.Table
+        The prepared and chunk-annotated weights table.
+    n_chunks : int
+        The total number of chunks to process.
+    vds : hail.vds.VariantDataset
+        The Variant Dataset, potentially pre-filtered for samples.
+    config : PRSConfig
+        The configuration object containing all calculation settings.
+
+    Returns
+    -------
+    list[pd.DataFrame]
+        A list of Pandas DataFrames, where each DataFrame contains the partial
+        PRS results for one chunk.
+    """
     partial_dfs = []
     for i in range(n_chunks):
         with _log_timing(
-            f"Processing chunk {i + 1}/{n_chunks}", config['detailed_timings']
+            f"Processing chunk {i + 1}/{n_chunks}", config.detailed_timings
         ):
             # Use .persist() to avoid recomputation of the same chunk in
             # _calculate_prs_chunk, specifically during:
@@ -449,12 +488,7 @@ def _process_chunks(
             chunk_prs_table = _calculate_prs_chunk(
                 weights_table=weights_chunk,
                 vds=vds,
-                include_n_shared_loci=config['include_n_shared_loci'],
-                sample_id_col=config['sample_id_col'],
-                split_multi=config['split_multi'],
-                ref_is_effect_allele=config['ref_is_effect_allele'],
-                strict_allele_match=config['strict_allele_match'],
-                detailed_timings=False,
+                config=config
             )
 
             partial_dfs.append(chunk_prs_table.to_pandas())
@@ -467,7 +501,30 @@ def _aggregate_and_export(
     sample_id_col: str,
     detailed_timings: bool,
 ) -> None:
-    """Aggregates partial results and exports the final file."""
+    """
+    Aggregates partial Pandas DataFrame results and exports to a final file.
+
+    This helper function handles the final aggregation and export stage. It
+    takes a list of Pandas DataFrames, each containing partial results from a
+    single chunk, concatenates them, and then calculates the final total PRS
+    for each sample by grouping and summing the results. The final aggregated
+    data is then written to a specified cloud storage path.
+
+    Parameters
+    ----------
+    partial_dfs : list[pd.DataFrame]
+        A list of Pandas DataFrames, each containing partial PRS results.
+    output_path : str
+        The GCS path to write the final tab-separated file.
+    sample_id_col : str
+        The name of the column containing sample IDs to group by.
+    detailed_timings : bool
+        If True, logs the duration of the aggregation and export steps.
+
+    Returns
+    -------
+    None
+    """
     if not partial_dfs:
         logger.warning(
             "No PRS results were generated. No output file will be created."
@@ -488,31 +545,21 @@ def calculate_prs(
     weights_table: hl.Table,
     vds: hl.vds.VariantDataset,
     output_path: str,
-    chunk_size: int = 20000,
-    samples_to_keep: typing.Optional[typing.Any] = None,
-    weight_col_name: str = 'weight',
-    log_transform_weight: bool = False,
-    include_n_shared_loci: bool = False,
-    sample_id_col: str = 'person_id',
-    split_multi: bool = True,
-    ref_is_effect_allele: bool = False,
-    strict_allele_match: bool = True,
-    detailed_timings: bool = False,
+    config: PRSConfig = PRSConfig(),
 ) -> typing.Optional[str]:
     """
-    Calculates PRS by chunking weights, checkpointing each chunk, aggregating
-    the results, and exporting the final table to a text file.
+    Calculates a Polygenic Risk Score (PRS) and exports it to a file.
 
-    This function is optimized for the All of Us VDS, where multi-allelic
-    variants are not pre-split. It is compatible with different VDS versions by
-    handling both global ('GT') and local ('LGT'/'LA') genotype encoding
-    schemes.
+    This function is the main entry point for the PRS calculation workflow. It
+    processes a weights table in chunks, using a filter_intervals approach to
+    select variants from the VDS for each chunk. The partial results are then
+    converted to Pandas DataFrames and aggregated in memory to produce the
+    final score file.
 
     Notes
     -----
-    By default (split_multi=True), this function prioritizes robustness over
-    performance by splitting multi-allelic variants. This is the best method
-    for handling the complex variants common in WGS data.
+    By default (`config.split_multi=True`), this function prioritizes
+    robustness over performance by splitting multi-allelic variants.
 
     This split_multi process includes creating a minimal representation for
     variants. For example, for a variant chr1:10075251 A/G in the weights
@@ -520,7 +567,7 @@ def calculate_prs(
     (e.g., alleles=['AGGGC', 'A', 'GGGGC']) by simplifying the VDS
     representation to its minimal form (['A', 'G']) for 'AGGGC' -> 'GGGGC'.
 
-    The non-split path (`split_multi=False`) is a faster but less robust
+    The non-split path (`config.split_multi=False`) is a faster but less robust
     alternative. It relies on a direct string comparison of alleles and will
     fail to match the complex variant described above. Furthermore, if the
     weights table contains multiple entries for the same locus, the non-split
@@ -531,7 +578,8 @@ def calculate_prs(
     Parameters
     ----------
     weights_table : hail.Table
-        A table of PRS weights. Must contain the following columns:
+        A Hail table containing variant weights. Must contain the following
+        columns:
         - 'chr': str
         - 'pos': int32
         - 'effect_allele': str
@@ -541,42 +589,12 @@ def calculate_prs(
     vds : hail.vds.VariantDataset
         The Variant Dataset containing the genetic data.
     output_path : str
-        A GCS path (starting with 'gs://') to write the final output file.
-    chunk_size : int, default 20000
-        The number of variants to include in each processing chunk.
-    samples_to_keep : hail.Table, list, set, tuple, int, or str, optional
-        A collection of sample IDs to keep. If provided, PRS will only be
-        calculated for these samples. Numeric IDs will be converted to strings.
-    weight_col_name : str, default 'weight'
-        The name of the column in `weights_table` that contains the effect
-        weights.
-    log_transform_weight : bool, default False
-        If True, applies a natural log transformation to the weight column. Use
-        this when weights are provided as odds ratios (OR), since the PRS model
-        assumes additive effects on the log-odds scale.
-    include_n_shared_loci : bool, default False
-        If True, adds a column 'n_shared_loci' with the total number of loci
-        shared between the weights table and the VDS. Note that this can impact
-        performance.
-    sample_id_col : str, default 'person_id'
-        The desired name for the sample ID column in the final output table.
-    split_multi : bool, default True
-        If True, splits multi-allelic variants in the VDS into bi-allelic
-        variants before calculation.
-    ref_is_effect_allele : bool, default False
-        If True, assumes the effect allele in the weights file is the reference
-        allele. This is only used when `split_multi` is True to ensure
-        correct allele ordering and weight direction.
-    strict_allele_match : bool, default True
-        This parameter is only used when `split_multi` is False. If True, it
-        performs a robust check to ensure that one allele from the weights
-        table is an exact match for the reference allele in the VDS, and that
-        the other allele is a valid alternate allele at that site. If False,
-        the check is skipped, and the join is based on the locus only, which is
-        not recommended.
-    detailed_timings : bool, default False
-        If True, logs the duration of each major computational step. Useful for
-        debugging performance bottlenecks.
+        A GCS path (starting with 'gs://') to write the final tab-separated
+        output file.
+    config : PRSConfig, optional
+        A configuration object for all optional parameters. If not provided,
+        default settings will be used. See the `PRSConfig` class for details
+        on all available settings.
 
     Returns
     -------
@@ -586,15 +604,16 @@ def calculate_prs(
         following columns:
         - A sample identifier column (named according to `sample_id_col`).
         - 'prs': The calculated Polygenic Risk Score.
-        - 'n_shared_loci' (optional): The number of variants used to
-          calculate the score, included if `include_n_shared_loci` is True.
+        - 'n_shared_loci' (optional): The number of variants used to calculate
+          the score, included if `config.include_n_shared_loci` is True.
 
     Raises
     ------
     ValueError
-        If `output_path` or `temp_path` are not valid GCS paths, or if the
-        `weights_table` is empty after validation.
-
+        If `output_path` is not a valid GCS path, or if the `weights_table`
+        is empty after validation.
+    TypeError
+        If the `config.samples_to_keep` argument is of an unsupported type.
     """
     timer = SimpleTimer()
     with timer:
@@ -609,40 +628,33 @@ def calculate_prs(
             output_path,
         )
 
-        if samples_to_keep is not None:
+        if config.samples_to_keep is not None:
             with _log_timing(
-                "Filtering to specified samples", detailed_timings
+                "Filtering to specified samples", config.detailed_timings
             ):
-                samples_ht = _prepare_samples_to_keep(samples_to_keep)
+                samples_ht = _prepare_samples_to_keep(config.samples_to_keep)
                 vds = hl.vds.filter_samples(vds, samples_ht)
 
         full_weights_table, n_chunks = _prepare_weights_for_chunking(
             weights_table=weights_table,
-            weight_col_name=weight_col_name,
-            log_transform_weight=log_transform_weight,
-            chunk_size=chunk_size,
-            detailed_timings=detailed_timings
+            weight_col_name=config.weight_col_name,
+            log_transform_weight=config.log_transform_weight,
+            chunk_size=config.chunk_size,
+            detailed_timings=config.detailed_timings
         )
 
-        # Create a config dict to easily pass parameters to the helper
-        config = {
-            'include_n_shared_loci': include_n_shared_loci,
-            'sample_id_col': sample_id_col,
-            'split_multi': split_multi,
-            'ref_is_effect_allele': ref_is_effect_allele,
-            'strict_allele_match': strict_allele_match,
-            'detailed_timings': detailed_timings,
-        }
-
         partial_dfs = _process_chunks(
-            full_weights_table, n_chunks, vds, config
+            full_weights_table=full_weights_table,
+            n_chunks=n_chunks,
+            vds=vds,
+            config=config,
         )
 
         _aggregate_and_export(
             partial_dfs=partial_dfs,
             output_path=output_path,
-            sample_id_col=sample_id_col,
-            detailed_timings=detailed_timings
+            sample_id_col=config.sample_id_col,
+            detailed_timings=config.detailed_timings
         )
 
     # Report the total time using the duration captured by the context manager
@@ -654,268 +666,268 @@ def calculate_prs(
 
 # This function is a legacy version of the PRS calculation that merges chunks
 # using Hail Table joins.
-def calculate_prs2(
-    weights_table: hl.Table,
-    vds: hl.vds.VariantDataset,
-    output_path: str,
-    temp_path: typing.Optional[str] = None,
-    chunk_size: int = 20000,
-    samples_to_keep: typing.Optional[typing.Any] = None,
-    weight_col_name: str = 'weight',
-    log_transform_weight: bool = False,
-    include_n_shared_loci: bool = False,
-    sample_id_col: str = 'person_id',
-    split_multi: bool = True,
-    ref_is_effect_allele: bool = False,
-    strict_allele_match: bool = True,
-    detailed_timings: bool = False,
-) -> typing.Optional[str]:
-    """
-    This function is a legacy version of `calculate_prs` that merges chunks
-    using Hail Table joins, with temporary checkpointing.
+# def calculate_prs2(
+#     weights_table: hl.Table,
+#     vds: hl.vds.VariantDataset,
+#     output_path: str,
+#     temp_path: typing.Optional[str] = None,
+#     chunk_size: int = 20000,
+#     samples_to_keep: typing.Optional[typing.Any] = None,
+#     weight_col_name: str = 'weight',
+#     log_transform_weight: bool = False,
+#     include_n_shared_loci: bool = False,
+#     sample_id_col: str = 'person_id',
+#     split_multi: bool = True,
+#     ref_is_effect_allele: bool = False,
+#     strict_allele_match: bool = True,
+#     detailed_timings: bool = False,
+# ) -> typing.Optional[str]:
+#     """
+#     This function is a legacy version of `calculate_prs` that merges chunks
+#     using Hail Table joins, with temporary checkpointing.
 
-    Calculates PRS by chunking weights, checkpointing each chunk, aggregating
-    the results, and exporting the final table to a text file.
+#     Calculates PRS by chunking weights, checkpointing each chunk, aggregating
+#     the results, and exporting the final table to a text file.
 
-    This function is optimized for the All of Us VDS, where multi-allelic
-    variants are not pre-split. It is compatible with different VDS versions by
-    handling both global ('GT') and local ('LGT'/'LA') genotype encoding
-    schemes.
+#     This function is optimized for the All of Us VDS, where multi-allelic
+#     variants are not pre-split. It is compatible with different VDS versions by
+#     handling both global ('GT') and local ('LGT'/'LA') genotype encoding
+#     schemes.
 
-    Notes
-    -----
-    By default (split_multi=True), this function prioritizes robustness over
-    performance by splitting multi-allelic variants. This is the best method
-    for handling the complex variants common in WGS data.
+#     Notes
+#     -----
+#     By default (split_multi=True), this function prioritizes robustness over
+#     performance by splitting multi-allelic variants. This is the best method
+#     for handling the complex variants common in WGS data.
 
-    This split_multi process includes creating a minimal representation for
-    variants. For example, for a variant chr1:10075251 A/G in the weights
-    table, split_multi can intelligently match it to a complex indel in the VDS
-    (e.g., alleles=['AGGGC', 'A', 'GGGGC']) by simplifying the VDS
-    representation to its minimal form (['A', 'G']) for 'AGGGC' -> 'GGGGC'.
+#     This split_multi process includes creating a minimal representation for
+#     variants. For example, for a variant chr1:10075251 A/G in the weights
+#     table, split_multi can intelligently match it to a complex indel in the VDS
+#     (e.g., alleles=['AGGGC', 'A', 'GGGGC']) by simplifying the VDS
+#     representation to its minimal form (['A', 'G']) for 'AGGGC' -> 'GGGGC'.
 
-    The non-split path (`split_multi=False`) is a faster but less robust
-    alternative. It relies on a direct string comparison of alleles and will
-    fail to match the complex variant described above. Furthermore, if the
-    weights table contains multiple entries for the same locus, the non-split
-    path will arbitrarily select only one of them. This "power-user" option
-    should only be used if you are certain that both your VDS and weights table
-    contain only simple, well-matched, bi-allelic variants.
+#     The non-split path (`split_multi=False`) is a faster but less robust
+#     alternative. It relies on a direct string comparison of alleles and will
+#     fail to match the complex variant described above. Furthermore, if the
+#     weights table contains multiple entries for the same locus, the non-split
+#     path will arbitrarily select only one of them. This "power-user" option
+#     should only be used if you are certain that both your VDS and weights table
+#     contain only simple, well-matched, bi-allelic variants.
 
-    Parameters
-    ----------
-    weights_table : hail.Table
-        A table of PRS weights. Must contain the following columns:
-        - 'chr': str
-        - 'pos': int32
-        - 'effect_allele': str
-        - 'noneffect_allele': str
-        - A column for the effect weight (float64), specified by
-          `weight_col_name`.
-    vds : hail.vds.VariantDataset
-        The Variant Dataset containing the genetic data.
-    output_path : str
-        A GCS path (starting with 'gs://') to write the final output file.
-    temp_path : str, optional
-        A GCS path for storing temporary checkpoint files. If not provided,
-        it will default to the 'WORKSPACE_BUCKET' environment variable.
-    chunk_size : int, default 20000
-        The number of variants to include in each processing chunk.
-    samples_to_keep : hail.Table, list, set, tuple, int, or str, optional
-        A collection of sample IDs to keep. If provided, PRS will only be
-        calculated for these samples. Numeric IDs will be converted to strings.
-    weight_col_name : str, default 'weight'
-        The name of the column in `weights_table` that contains the effect
-        weights.
-    log_transform_weight : bool, default False
-        If True, applies a natural log transformation to the weight column. Use
-        this when weights are provided as odds ratios (OR), since the PRS model
-        assumes additive effects on the log-odds scale.
-    include_n_shared_loci : bool, default False
-        If True, adds a column 'n_shared_loci' with the total number of loci
-        shared between the weights table and the VDS. Note that this can impact
-        performance.
-    sample_id_col : str, default 'person_id'
-        The desired name for the sample ID column in the final output table.
-    split_multi : bool, default True
-        If True, splits multi-allelic variants in the VDS into bi-allelic
-        variants before calculation.
-    ref_is_effect_allele : bool, default False
-        If True, assumes the effect allele in the weights file is the reference
-        allele. This is only used when `split_multi` is True to ensure
-        correct allele ordering and weight direction.
-    strict_allele_match : bool, default True
-        This parameter is only used when `split_multi` is False. If True, it
-        performs a robust check to ensure that one allele from the weights
-        table is an exact match for the reference allele in the VDS, and that
-        the other allele is a valid alternate allele at that site. If False,
-        the check is skipped, and the join is based on the locus only, which is
-        not recommended.
-    detailed_timings : bool, default False
-        If True, logs the duration of each major computational step. Useful for
-        debugging performance bottlenecks.
+#     Parameters
+#     ----------
+#     weights_table : hail.Table
+#         A table of PRS weights. Must contain the following columns:
+#         - 'chr': str
+#         - 'pos': int32
+#         - 'effect_allele': str
+#         - 'noneffect_allele': str
+#         - A column for the effect weight (float64), specified by
+#           `weight_col_name`.
+#     vds : hail.vds.VariantDataset
+#         The Variant Dataset containing the genetic data.
+#     output_path : str
+#         A GCS path (starting with 'gs://') to write the final output file.
+#     temp_path : str, optional
+#         A GCS path for storing temporary checkpoint files. If not provided,
+#         it will default to the 'WORKSPACE_BUCKET' environment variable.
+#     chunk_size : int, default 20000
+#         The number of variants to include in each processing chunk.
+#     samples_to_keep : hail.Table, list, set, tuple, int, or str, optional
+#         A collection of sample IDs to keep. If provided, PRS will only be
+#         calculated for these samples. Numeric IDs will be converted to strings.
+#     weight_col_name : str, default 'weight'
+#         The name of the column in `weights_table` that contains the effect
+#         weights.
+#     log_transform_weight : bool, default False
+#         If True, applies a natural log transformation to the weight column. Use
+#         this when weights are provided as odds ratios (OR), since the PRS model
+#         assumes additive effects on the log-odds scale.
+#     include_n_shared_loci : bool, default False
+#         If True, adds a column 'n_shared_loci' with the total number of loci
+#         shared between the weights table and the VDS. Note that this can impact
+#         performance.
+#     sample_id_col : str, default 'person_id'
+#         The desired name for the sample ID column in the final output table.
+#     split_multi : bool, default True
+#         If True, splits multi-allelic variants in the VDS into bi-allelic
+#         variants before calculation.
+#     ref_is_effect_allele : bool, default False
+#         If True, assumes the effect allele in the weights file is the reference
+#         allele. This is only used when `split_multi` is True to ensure
+#         correct allele ordering and weight direction.
+#     strict_allele_match : bool, default True
+#         This parameter is only used when `split_multi` is False. If True, it
+#         performs a robust check to ensure that one allele from the weights
+#         table is an exact match for the reference allele in the VDS, and that
+#         the other allele is a valid alternate allele at that site. If False,
+#         the check is skipped, and the join is based on the locus only, which is
+#         not recommended.
+#     detailed_timings : bool, default False
+#         If True, logs the duration of each major computational step. Useful for
+#         debugging performance bottlenecks.
 
-    Returns
-    -------
-    str or None
-        The path to the final output file. Returns None if no results are
-        generated. The output file is a tab-separated text file with the
-        following columns:
-        - A sample identifier column (named according to `sample_id_col`).
-        - 'prs': The calculated Polygenic Risk Score.
-        - 'n_shared_loci' (optional): The number of variants used to
-          calculate the score, included if `include_n_shared_loci` is True.
+#     Returns
+#     -------
+#     str or None
+#         The path to the final output file. Returns None if no results are
+#         generated. The output file is a tab-separated text file with the
+#         following columns:
+#         - A sample identifier column (named according to `sample_id_col`).
+#         - 'prs': The calculated Polygenic Risk Score.
+#         - 'n_shared_loci' (optional): The number of variants used to
+#           calculate the score, included if `include_n_shared_loci` is True.
 
-    Raises
-    ------
-    ValueError
-        If `output_path` or `temp_path` are not valid GCS paths, or if the
-        `weights_table` is empty after validation.
-    """
-    timer = SimpleTimer()
-    with timer:
-        if not output_path.startswith('gs://'):
-            raise ValueError(
-                "The 'output_path' must be a Google Cloud Storage (GCS) "
-                "path, starting with 'gs://'."
-            )
+#     Raises
+#     ------
+#     ValueError
+#         If `output_path` or `temp_path` are not valid GCS paths, or if the
+#         `weights_table` is empty after validation.
+#     """
+#     timer = SimpleTimer()
+#     with timer:
+#         if not output_path.startswith('gs://'):
+#             raise ValueError(
+#                 "The 'output_path' must be a Google Cloud Storage (GCS) "
+#                 "path, starting with 'gs://'."
+#             )
 
-        temp_path = temp_path or os.getenv('WORKSPACE_BUCKET')
-        if not temp_path or not temp_path.startswith('gs://'):
-            raise ValueError(
-                "A valid GCS path (starting with 'gs://') for temporary files "
-                "must be provided via the 'temp_path' argument or the "
-                "'WORKSPACE_BUCKET' environment variable."
-            )
+#         temp_path = temp_path or os.getenv('WORKSPACE_BUCKET')
+#         if not temp_path or not temp_path.startswith('gs://'):
+#             raise ValueError(
+#                 "A valid GCS path (starting with 'gs://') for temporary files "
+#                 "must be provided via the 'temp_path' argument or the "
+#                 "'WORKSPACE_BUCKET' environment variable."
+#             )
 
-        logger.info(
-            "Starting PRS calculation. Final result will be at: %s",
-            output_path,
-        )
+#         logger.info(
+#             "Starting PRS calculation. Final result will be at: %s",
+#             output_path,
+#         )
 
-        temp_dir = f"{temp_path.rstrip('/')}/prs_temp_{uuid4()}"
-        logger.info("Using temporary checkpointing directory: %s", temp_dir)
+#         temp_dir = f"{temp_path.rstrip('/')}/prs_temp_{uuid4()}"
+#         logger.info("Using temporary checkpointing directory: %s", temp_dir)
 
-        try:
-            if samples_to_keep is not None:
-                with _log_timing(
-                    "Filtering to specified samples", detailed_timings
-                ):
-                    samples_ht = _prepare_samples_to_keep(samples_to_keep)
-                    vds = hl.vds.filter_samples(vds, samples_ht)
+#         try:
+#             if samples_to_keep is not None:
+#                 with _log_timing(
+#                     "Filtering to specified samples", detailed_timings
+#                 ):
+#                     samples_ht = _prepare_samples_to_keep(samples_to_keep)
+#                     vds = hl.vds.filter_samples(vds, samples_ht)
 
-            with _log_timing(
-                "Preparing and chunking full weights table", detailed_timings
-            ):
-                full_weights_table = _validate_and_prepare_weights_table(
-                    weights_table, weight_col_name, log_transform_weight
-                )
-                total_variants = full_weights_table.count()
-                if total_variants == 0:
-                    raise ValueError(
-                        "Weights table is empty after validation."
-                    )
+#             with _log_timing(
+#                 "Preparing and chunking full weights table", detailed_timings
+#             ):
+#                 full_weights_table = _validate_and_prepare_weights_table(
+#                     weights_table, weight_col_name, log_transform_weight
+#                 )
+#                 total_variants = full_weights_table.count()
+#                 if total_variants == 0:
+#                     raise ValueError(
+#                         "Weights table is empty after validation."
+#                     )
 
-                n_chunks = ceil(total_variants / chunk_size)
-                logger.info(
-                    "Total variants: %d, Number of chunks: %d",
-                    total_variants,
-                    n_chunks,
-                )
+#                 n_chunks = ceil(total_variants / chunk_size)
+#                 logger.info(
+#                     "Total variants: %d, Number of chunks: %d",
+#                     total_variants,
+#                     n_chunks,
+#                 )
 
-                full_weights_table = full_weights_table.add_index()
-                full_weights_table = full_weights_table.annotate(
-                    chunk_id=hl.int(full_weights_table.idx / chunk_size)
-                )
-                full_weights_table = full_weights_table.key_by('locus')
+#                 full_weights_table = full_weights_table.add_index()
+#                 full_weights_table = full_weights_table.annotate(
+#                     chunk_id=hl.int(full_weights_table.idx / chunk_size)
+#                 )
+#                 full_weights_table = full_weights_table.key_by('locus')
 
-            partial_results = []
-            for i in range(n_chunks):
-                with _log_timing(
-                    f"Processing and checkpointing chunk {i + 1}/{n_chunks}",
-                    True,
-                ):
-                    # Use .persist() to avoid recomputation of the same chunk in
-                    # _calculate_prs_chunk, specifically during:
-                    # 1. Creation of interval_ht
-                    # 2. Annotating rows with PRS weight information
-                    weights_chunk = full_weights_table.filter(
-                        full_weights_table.chunk_id == i
-                    ).persist()
-                    checkpoint_path = f"{temp_dir}/chunk_{i}.ht"
+#             partial_results = []
+#             for i in range(n_chunks):
+#                 with _log_timing(
+#                     f"Processing and checkpointing chunk {i + 1}/{n_chunks}",
+#                     True,
+#                 ):
+#                     # Use .persist() to avoid recomputation of the same chunk in
+#                     # _calculate_prs_chunk, specifically during:
+#                     # 1. Creation of interval_ht
+#                     # 2. Annotating rows with PRS weight information
+#                     weights_chunk = full_weights_table.filter(
+#                         full_weights_table.chunk_id == i
+#                     ).persist()
+#                     checkpoint_path = f"{temp_dir}/chunk_{i}.ht"
 
-                    chunk_prs_table = _calculate_prs_chunk(
-                        weights_table=weights_chunk,
-                        vds=vds,
-                        include_n_shared_loci=include_n_shared_loci,
-                        sample_id_col=sample_id_col,
-                        split_multi=split_multi,
-                        ref_is_effect_allele=ref_is_effect_allele,
-                        strict_allele_match=strict_allele_match,
-                        detailed_timings=detailed_timings,
-                    )
+#                     chunk_prs_table = _calculate_prs_chunk(
+#                         weights_table=weights_chunk,
+#                         vds=vds,
+#                         include_n_shared_loci=include_n_shared_loci,
+#                         sample_id_col=sample_id_col,
+#                         split_multi=split_multi,
+#                         ref_is_effect_allele=ref_is_effect_allele,
+#                         strict_allele_match=strict_allele_match,
+#                         detailed_timings=detailed_timings,
+#                     )
 
-                    processed_chunk = chunk_prs_table.checkpoint(
-                        checkpoint_path, overwrite=True
-                    )
-                    partial_results.append(processed_chunk)
+#                     processed_chunk = chunk_prs_table.checkpoint(
+#                         checkpoint_path, overwrite=True
+#                     )
+#                     partial_results.append(processed_chunk)
 
-            if not partial_results:
-                logger.warning(
-                    "No PRS results were generated. "
-                    "No output file will be created."
-                )
-                return None
+#             if not partial_results:
+#                 logger.warning(
+#                     "No PRS results were generated. "
+#                     "No output file will be created."
+#                 )
+#                 return None
 
-            with _log_timing(
-                f"Aggregating chunks and exporting to {output_path}",
-                True,
-            ):
-                final_prs_table = partial_results[0].key_by(sample_id_col)
-                for i in range(1, len(partial_results)):
-                    next_chunk_table = partial_results[i].key_by(
-                        sample_id_col
-                    )
-                    final_prs_table = final_prs_table.join(
-                        next_chunk_table, how='outer'
-                    )
+#             with _log_timing(
+#                 f"Aggregating chunks and exporting to {output_path}",
+#                 True,
+#             ):
+#                 final_prs_table = partial_results[0].key_by(sample_id_col)
+#                 for i in range(1, len(partial_results)):
+#                     next_chunk_table = partial_results[i].key_by(
+#                         sample_id_col
+#                     )
+#                     final_prs_table = final_prs_table.join(
+#                         next_chunk_table, how='outer'
+#                     )
 
-                    current_prs = hl.coalesce(final_prs_table.prs, 0)
-                    next_prs = hl.coalesce(final_prs_table.prs_1, 0)
-                    final_prs_table = final_prs_table.annotate(
-                        prs=current_prs + next_prs
-                    )
+#                     current_prs = hl.coalesce(final_prs_table.prs, 0)
+#                     next_prs = hl.coalesce(final_prs_table.prs_1, 0)
+#                     final_prs_table = final_prs_table.annotate(
+#                         prs=current_prs + next_prs
+#                     )
 
-                    if include_n_shared_loci:
-                        current_loci = hl.coalesce(
-                            final_prs_table.n_shared_loci, 0
-                        )
-                        next_loci = hl.coalesce(
-                            final_prs_table.n_shared_loci_1, 0
-                        )
-                        final_prs_table = final_prs_table.annotate(
-                            n_shared_loci=current_loci + next_loci
-                        ).key_by(sample_id_col)
+#                     if include_n_shared_loci:
+#                         current_loci = hl.coalesce(
+#                             final_prs_table.n_shared_loci, 0
+#                         )
+#                         next_loci = hl.coalesce(
+#                             final_prs_table.n_shared_loci_1, 0
+#                         )
+#                         final_prs_table = final_prs_table.annotate(
+#                             n_shared_loci=current_loci + next_loci
+#                         ).key_by(sample_id_col)
 
-                    cols_to_keep = ['prs']
-                    if include_n_shared_loci:
-                        cols_to_keep.append('n_shared_loci')
-                    final_prs_table = final_prs_table.select(*cols_to_keep)
+#                     cols_to_keep = ['prs']
+#                     if include_n_shared_loci:
+#                         cols_to_keep.append('n_shared_loci')
+#                     final_prs_table = final_prs_table.select(*cols_to_keep)
 
-                final_prs_table.export(
-                    output_path, header=True, delimiter='\t'
-                )
+#                 final_prs_table.export(
+#                     output_path, header=True, delimiter='\t'
+#                 )
 
-        finally:
-            logger.info("Cleaning up temporary directory: %s", temp_dir)
-            if hfs.is_dir(temp_dir):
-                hfs.rmtree(temp_dir)
+#         finally:
+#             logger.info("Cleaning up temporary directory: %s", temp_dir)
+#             if hfs.is_dir(temp_dir):
+#                 hfs.rmtree(temp_dir)
 
-    # Report the total time using the duration captured by the context manager
-    logger.info(
-        "PRS calculation complete. Total time: %.2f seconds.", timer.duration
-    )
-    return output_path
+#     # Report the total time using the duration captured by the context manager
+#     logger.info(
+#         "PRS calculation complete. Total time: %.2f seconds.", timer.duration
+#     )
+#     return output_path
 
 
 # def calculate_prs_batch(
