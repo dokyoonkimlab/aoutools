@@ -305,14 +305,13 @@ def _calculate_prs_chunk(
         The Variant Dataset containing the genetic data.
     config : PRSConfig
         A configuration object containing all settings for the calculation,
-        such as `split_multi` and `include_n_shared_loci`.
+        such as `split_multi` and `include_n_matched`.
 
     Returns
     -------
     hail.Table
         A Hail Table containing the partial PRS results for the chunk, with
-        columns for the sample ID, 'prs' score, and optionally
-        'n_shared_loci'.
+        columns for the sample ID, 'prs' score, and optionally 'n_matched'.
     """
     with _log_timing(
         "Planning: Filtering VDS to variants in weights table chunk",
@@ -351,16 +350,18 @@ def _calculate_prs_chunk(
         prs=hl.agg.sum(mt.dosage * mt.weights_info.weight)
     ).cols()
 
-    if config.include_n_shared_loci:
-        with _log_timing("Computing shared loci count", config.detailed_timings):
+    if config.include_n_matched:
+        with _log_timing(
+                "Computing shared variants count", config.detailed_timings
+        ):
             # Using hl.agg.count() within the `select_cols` block won't work
             # since homozygous reference are set to missing while `agg.count`
             # counts the number of rows for which that specific sample has a
             # non-missing genotype calls.
             # This is two-pass approach and thus less performant.
-            n_shared_loci = mt.count_rows()
-            logger.info("%d loci in common in this chunk.", n_shared_loci)
-            prs_table = prs_table.annotate(n_shared_loci=n_shared_loci)
+            n_matched = mt.count_rows()
+            logger.info("%d variants in common in this chunk.", n_matched)
+            prs_table = prs_table.annotate(n_matched=n_matched)
 
     prs_table = prs_table.rename({'s': config.sample_id_col})
     # Dropping all global annotations by passing no arguments to select_globals().
@@ -604,8 +605,8 @@ def calculate_prs(
         following columns:
         - A sample identifier column (named according to `sample_id_col`).
         - 'prs': The calculated Polygenic Risk Score.
-        - 'n_shared_loci' (optional): The number of variants used to calculate
-          the score, included if `config.include_n_shared_loci` is True.
+        - 'n_matched' (optional): The number of variants used to calculate
+          the score, included if `config.include_n_matched` is True.
 
     Raises
     ------

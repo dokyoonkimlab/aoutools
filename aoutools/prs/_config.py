@@ -24,10 +24,10 @@ class PRSConfig:
         If True, applies a natural log transformation to the weight column. Use
         this when weights are provided as odds ratios (OR), since the PRS model
         assumes additive effects on the log-odds scale.
-    include_n_shared_loci : bool, default False
-        If True, adds a column 'n_shared_loci' with the total number of loci
-        shared between the weights table and the VDS. Note that this can impact
-        performance.
+    include_n_matched: bool, default False
+        If True, adds a column 'n_matched' with the total number of variants
+        matched between the weights table and the VDS. This option has a
+        performance cost.
     sample_id_col : str, default 'person_id'
         The desired name for the sample ID column in the final output table.
     split_multi : bool, default True
@@ -52,7 +52,7 @@ class PRSConfig:
     samples_to_keep: typing.Optional[typing.Any] = None
     weight_col_name: str = 'weight'
     log_transform_weight: bool = False
-    include_n_shared_loci: bool = False
+    include_n_matched: bool = False
     sample_id_col: str = 'person_id'
     split_multi: bool = True
     ref_is_effect_allele: bool = False
