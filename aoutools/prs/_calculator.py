@@ -125,7 +125,7 @@ def _calculate_dosage(
             hl.array([mt.alleles[mt.GT[0]], mt.alleles[mt.GT[1]]])
         )
     else:
-        # Local-indexed (sparse) format: 'LGT' indices refer to the 'LA'
+        # Local-indexed format: 'LGT' indices refer to the 'LA'
         # (local-to-global) map, which then refers to 'alleles'.
         # Example: LGT=[0, 1], LA=[0, 2], mt.alleles=['A', 'C', 'G']
         # 1. LGT[0] is 0. LA[0] is 0. mt.alleles[0] is 'A'.
@@ -149,6 +149,139 @@ def _calculate_dosage(
                 lambda allele: allele == effect_allele
             ).length()
         )
+
+
+def _prepare_mt_split(
+    vds: hl.vds.VariantDataset,
+    weights_table: hl.Table,
+    ref_is_effect_allele: bool,
+    detailed_timings: bool,
+) -> hl.MatrixTable:
+    """
+    Prepares a MatrixTable for the split-multi PRS calculation path.
+
+    This function takes an interval-filtered VDS, splits multi-allelic sites,
+    and joins it with the weights table using a precise `(locus, alleles)`
+    key. It handles allele orientation and weight direction based on the
+    `ref_is_effect_allele` flag and calculates the bi-allelic dosage.
+
+    Parameters
+    ----------
+    vds : hail.vds.VariantDataset
+        The interval-filtered Variant Dataset.
+    weights_table : hail.Table
+        The chunk of the weights table.
+    ref_is_effect_allele : bool
+        If True, assumes the effect allele is the reference.
+    detailed_timings : bool
+        If True, logs the duration of computational steps.
+
+    Returns
+    -------
+    hail.MatrixTable
+        A prepared MatrixTable, filtered and annotated with `weights_info`
+        and `dosage` for the specified effect allele.
+    """
+    with _log_timing(
+        "Splitting multi-allelic variants and joining", detailed_timings
+    ):
+        split_vds = hl.vds.split_multi(vds)
+        mt = split_vds.variant_data
+
+        weights_ht_processed = weights_table.annotate(
+            alleles=hl.if_else(
+                ref_is_effect_allele,
+                [weights_table.effect_allele, weights_table.noneffect_allele],
+                [weights_table.noneffect_allele, weights_table.effect_allele],
+            ),
+            weight=hl.if_else(
+                ref_is_effect_allele,
+                -weights_table.weight,
+                weights_table.weight,
+            ),
+        ).key_by('locus', 'alleles')
+
+        mt = mt.annotate_rows(
+            weights_info=weights_ht_processed[mt.row_key]
+        )
+        mt = mt.filter_rows(hl.is_defined(mt.weights_info))
+
+    with _log_timing(
+        "Planning: Calculating per-variant dosage",
+        detailed_timings,
+    ):
+        # After splitting, LGT is converted to GT, so we can
+        # directly and safely use the built-in dosage calculator.
+        # See the source code for `hl.vds.split_multi` for details.
+        mt = mt.annotate_entries(dosage=mt.GT.n_alt_alleles())
+
+        return mt
+
+
+def _prepare_mt_non_split(
+    vds: hl.vds.VariantDataset,
+    weights_table: hl.Table,
+    strict_allele_match: bool,
+    detailed_timings: bool,
+) -> hl.MatrixTable:
+    """
+    Prepares a MatrixTable for the non-split PRS calculation path.
+
+    This function takes an interval-filtered VDS and joins it with the
+    weights table using a locus-based key. It optionally performs a strict
+    allele match to handle allele orientation and then calculates dosage
+    using the custom multi-allelic dosage function.
+
+    Parameters
+    ----------
+    vds : hail.vds.VariantDataset
+        The interval-filtered Variant Dataset.
+    weights_table : hail.Table
+        The chunk of the weights table.
+    strict_allele_match : bool
+        If True, performs a robust check for allele correspondence.
+    detailed_timings : bool
+        If True, logs the duration of computational steps.
+
+    Returns
+    -------
+    hail.MatrixTable
+        A prepared MatrixTable, filtered and annotated with `weights_info`
+        and `dosage` for the specified effect allele.
+    """
+    mt = vds.variant_data
+
+    with _log_timing(
+        "Planning: Annotating variants with weights", detailed_timings
+    ):
+        mt = mt.annotate_rows(weights_info=weights_table[mt.locus])
+        mt = mt.filter_rows(hl.is_defined(mt.weights_info))
+
+    if strict_allele_match:
+        with _log_timing("Performing strict allele match", detailed_timings):
+            alt_alleles = hl.set(mt.alleles[1:])
+            ref_allele = mt.alleles[0]
+            effect = mt.weights_info.effect_allele
+            noneffect = mt.weights_info.noneffect_allele
+            is_valid_pair = (
+                (
+                    (effect == ref_allele)
+                    & alt_alleles.contains(noneffect)
+                )
+                | (
+                    (noneffect == ref_allele)
+                    & alt_alleles.contains(effect)
+                )
+            )
+            mt = mt.filter_rows(is_valid_pair)
+
+    with _log_timing(
+        "Planning: Calculating per-variant dosage",
+        detailed_timings,
+    ):
+        mt = mt.annotate_entries(dosage=_calculate_dosage(mt))
+
+    return mt
 
 
 def _calculate_prs_chunk(
@@ -219,82 +352,32 @@ def _calculate_prs_chunk(
         vds = hl.vds.filter_intervals(vds, intervals_ht, keep=True)
 
     if split_multi:
-        with _log_timing(
-            "Splitting multi-allelic variants and joining", detailed_timings
-        ):
-            split_vds = hl.vds.split_multi(vds)
-            mt = split_vds.variant_data
-
-            weights_ht_processed = weights_table.annotate(
-                alleles=hl.if_else(
-                    ref_is_effect_allele,
-                    [weights_table.effect_allele, weights_table.noneffect_allele],
-                    [weights_table.noneffect_allele, weights_table.effect_allele],
-                ),
-                weight=hl.if_else(
-                    ref_is_effect_allele,
-                    -weights_table.weight,
-                    weights_table.weight,
-                ),
-            ).key_by('locus', 'alleles')
-
-            mt = mt.annotate_rows(
-                weights_info=weights_ht_processed[mt.row_key]
-            )
-            mt = mt.filter_rows(hl.is_defined(mt.weights_info))
-
-        with _log_timing(
-            "Planning: Calculating per-variant dosage (bi-allelic)",
-            detailed_timings,
-        ):
-            # After splitting, LGT is converted to GT, so we can
-            # directly and safely use the built-in dosage calculator.
-            mt = mt.annotate_entries(dosage=mt.GT.n_alt_alleles())
-
+        mt = _prepare_mt_split(
+            vds=vds,
+            weights_table=weights_table,
+            ref_is_effect_allele=ref_is_effect_allele,
+            detailed_timings=detailed_timings,
+        )
     else:
-        mt = vds.variant_data
+        mt = _prepare_mt_non_split(
+            vds=vds,
+            weights_table=weights_table,
+            strict_allele_match=strict_allele_match,
+            detailed_timings=detailed_timings,
+        )
 
-        with _log_timing(
-            "Planning: Annotating variants with weights", detailed_timings
-        ):
-            mt = mt.annotate_rows(weights_info=weights_table[mt.locus])
-            mt = mt.filter_rows(hl.is_defined(mt.weights_info))
-
-        if strict_allele_match:
-            with _log_timing("Performing strict allele match", detailed_timings):
-                alt_alleles = hl.set(mt.alleles[1:])
-                ref_allele = mt.alleles[0]
-                effect = mt.weights_info.effect_allele
-                noneffect = mt.weights_info.noneffect_allele
-                is_valid_pair = (
-                    (
-                        (effect == ref_allele)
-                        & alt_alleles.contains(noneffect)
-                    )
-                    | (
-                        (noneffect == ref_allele)
-                        & alt_alleles.contains(effect)
-                    )
-                )
-                mt = mt.filter_rows(is_valid_pair)
-
-        with _log_timing(
-            "Planning: Calculating per-variant dosage (multi-allelic)",
-            detailed_timings,
-        ):
-            mt = mt.annotate_entries(dosage=_calculate_dosage(mt))
-
+    # Chunks aggregation
     prs_table = mt.select_cols(
         prs=hl.agg.sum(mt.dosage * mt.weights_info.weight)
     ).cols()
 
     if include_n_shared_loci:
         with _log_timing("Computing shared loci count", detailed_timings):
-            ## Using hl.agg.count() within the `select_cols` block won't work
-            ## since homozygous reference are set to missing while `agg.count`
-            ## counts the number of rows for which that specific sample has a
-            ## non-missing genotype calls.
-            ## This is two-pass approach and thus less performant.
+            # Using hl.agg.count() within the `select_cols` block won't work
+            # since homozygous reference are set to missing while `agg.count`
+            # counts the number of rows for which that specific sample has a
+            # non-missing genotype calls.
+            # This is two-pass approach and thus less performant.
             n_shared_loci = mt.count_rows()
             logger.info("%d loci in common in this chunk.", n_shared_loci)
             prs_table = prs_table.annotate(n_shared_loci=n_shared_loci)
