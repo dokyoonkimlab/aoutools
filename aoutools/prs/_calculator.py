@@ -388,6 +388,102 @@ def _calculate_prs_chunk(
     return prs_table.select_globals()
 
 
+def _prepare_weights_for_chunking(
+    weights_table: hl.Table,
+    weight_col_name: str,
+    log_transform_weight: bool,
+    chunk_size: typing.Optional[int],
+    detailed_timings: bool,
+) -> tuple[hl.Table, int]:
+    """Prepares the full weights table for chunking."""
+    with _log_timing(
+        "Preparing and analyzing weights table", detailed_timings
+    ):
+        full_weights_table = _validate_and_prepare_weights_table(
+            weights_table, weight_col_name, log_transform_weight
+        )
+        total_variants = full_weights_table.count()
+        if total_variants == 0:
+            raise ValueError("Weights table is empty after validation.")
+
+        effective_chunk_size = chunk_size or total_variants
+        n_chunks = ceil(total_variants / effective_chunk_size)
+        logger.info(
+            "Total variants: %d, Number of chunks: %d",
+            total_variants,
+            n_chunks,
+        )
+
+        full_weights_table = (
+            full_weights_table.add_index()
+            .annotate(
+                chunk_id=hl.int(
+                    full_weights_table.idx / effective_chunk_size
+                )
+            )
+            .key_by('locus')
+        )
+        return full_weights_table, n_chunks
+
+
+def _process_chunks(
+    full_weights_table: hl.Table,
+    n_chunks: int,
+    vds: hl.vds.VariantDataset,
+    config: dict,
+) -> list[pd.DataFrame]:
+    """Processes each chunk and returns a list of Pandas DataFrames."""
+    partial_dfs = []
+    for i in range(n_chunks):
+        with _log_timing(
+            f"Processing chunk {i + 1}/{n_chunks}", config['detailed_timings']
+        ):
+            # Use .persist() to avoid recomputation of the same chunk in
+            # _calculate_prs_chunk, specifically during:
+            # 1. Creation of interval_ht
+            # 2. Annotating rows with PRS weight information
+            weights_chunk = full_weights_table.filter(
+                full_weights_table.chunk_id == i
+            ).persist()
+
+            chunk_prs_table = _calculate_prs_chunk(
+                weights_table=weights_chunk,
+                vds=vds,
+                include_n_shared_loci=config['include_n_shared_loci'],
+                sample_id_col=config['sample_id_col'],
+                split_multi=config['split_multi'],
+                ref_is_effect_allele=config['ref_is_effect_allele'],
+                strict_allele_match=config['strict_allele_match'],
+                detailed_timings=False,
+            )
+
+            partial_dfs.append(chunk_prs_table.to_pandas())
+    return partial_dfs
+
+
+def _aggregate_and_export(
+    partial_dfs: list[pd.DataFrame],
+    output_path: str,
+    sample_id_col: str,
+    detailed_timings: bool,
+) -> None:
+    """Aggregates partial results and exports the final file."""
+    if not partial_dfs:
+        logger.warning(
+            "No PRS results were generated. No output file will be created."
+        )
+        return
+
+    with _log_timing("Aggregating results with Pandas", detailed_timings):
+        combined_df = pd.concat(partial_dfs, ignore_index=True)
+        final_df = combined_df.groupby(sample_id_col).sum()
+
+    with _log_timing(
+            f"Exporting final result to {output_path}", detailed_timings
+    ):
+        with hfs.open(output_path, 'w') as f:
+            final_df.to_csv(f, sep='\t', index=True, header=True)
+
 def calculate_prs(
     weights_table: hl.Table,
     vds: hl.vds.VariantDataset,
@@ -520,82 +616,40 @@ def calculate_prs(
                 samples_ht = _prepare_samples_to_keep(samples_to_keep)
                 vds = hl.vds.filter_samples(vds, samples_ht)
 
-        with _log_timing(
-            "Preparing and chunking full weights table", detailed_timings
-        ):
-            full_weights_table = _validate_and_prepare_weights_table(
-                weights_table, weight_col_name, log_transform_weight
-            )
-            total_variants = full_weights_table.count()
-            if total_variants == 0:
-                raise ValueError(
-                    "Weights table is empty after validation."
-                )
+        full_weights_table, n_chunks = _prepare_weights_for_chunking(
+            weights_table=weights_table,
+            weight_col_name=weight_col_name,
+            log_transform_weight=log_transform_weight,
+            chunk_size=chunk_size,
+            detailed_timings=detailed_timings
+        )
 
-            n_chunks = ceil(total_variants / chunk_size)
-            logger.info(
-                "Total variants: %d, Number of chunks: %d",
-                total_variants,
-                n_chunks,
-            )
+        # Create a config dict to easily pass parameters to the helper
+        config = {
+            'include_n_shared_loci': include_n_shared_loci,
+            'sample_id_col': sample_id_col,
+            'split_multi': split_multi,
+            'ref_is_effect_allele': ref_is_effect_allele,
+            'strict_allele_match': strict_allele_match,
+            'detailed_timings': detailed_timings,
+        }
 
-            full_weights_table = full_weights_table.add_index()
-            full_weights_table = full_weights_table.annotate(
-                chunk_id=hl.int(full_weights_table.idx / chunk_size)
-            )
-            full_weights_table = full_weights_table.key_by('locus')
+        partial_dfs = _process_chunks(
+            full_weights_table, n_chunks, vds, config
+        )
 
-        partial_dfs = []
-        for i in range(n_chunks):
-            with _log_timing(
-                f"Processing chunk {i + 1}/{n_chunks}",
-                True,
-            ):
-                # Use .persist() to avoid recomputation of the same chunk in
-                # _calculate_prs_chunk, specifically during:
-                # 1. Creation of interval_ht
-                # 2. Annotating rows with PRS weight information
-                weights_chunk = full_weights_table.filter(
-                    full_weights_table.chunk_id == i
-                ).persist()
-
-                chunk_prs_table = _calculate_prs_chunk(
-                    weights_table=weights_chunk,
-                    vds=vds,
-                    include_n_shared_loci=include_n_shared_loci,
-                    sample_id_col=sample_id_col,
-                    split_multi=split_multi,
-                    ref_is_effect_allele=ref_is_effect_allele,
-                    strict_allele_match=strict_allele_match,
-                    detailed_timings=detailed_timings,
-                )
-
-                partial_dfs.append(chunk_prs_table.to_pandas())
-
-        if not partial_dfs:
-            logger.warning("No PRS results were generated.")
-            return None
-
-        # Aggregate the results from all chunks in master node
-        with _log_timing(
-            f"Aggregating chunks and exporting to {output_path}",
-            True,
-        ):
-            combined_df = pd.concat(partial_dfs, ignore_index=True)
-            final_df = combined_df.groupby(sample_id_col).sum()
-
-        # Export the final pandas data frame to a csv file
-        with _log_timing(
-                f"Exporting final result to {output_path}", detailed_timings
-        ):
-            with hfs.open(output_path, 'w') as f:
-                final_df.to_csv(f, sep='\t', index=True, header=True)
+        _aggregate_and_export(
+            partial_dfs=partial_dfs,
+            output_path=output_path,
+            sample_id_col=sample_id_col,
+            detailed_timings=detailed_timings
+        )
 
     # Report the total time using the duration captured by the context manager
     logger.info(
         "PRS calculation complete. Total time: %.2f seconds.", timer.duration
     )
-    return output_path
+    return output_path if partial_dfs else None
 
 
 # This function is a legacy version of the PRS calculation that merges chunks
