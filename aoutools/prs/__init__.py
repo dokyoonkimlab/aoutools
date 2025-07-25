@@ -11,6 +11,12 @@ from ._calculator import (
     calculate_prs,
 )
 
+# Import the main batch calculator functions from the internal _calculator_batch.py module
+from ._calculator_batch import (
+    calculate_prs_batch,
+)
+
+
 # Import the PRSConfig from the internal _config.py module
 from ._config import (
     PRSConfig,
@@ -27,5 +33,6 @@ __all__ = [
     'read_prs_weights',
     'read_prscs',
     'calculate_prs',
+    'calculate_prs_batch',
     'PRSConfig'
 ]

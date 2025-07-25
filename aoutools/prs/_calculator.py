@@ -79,6 +79,8 @@ def _validate_and_prepare_weights_table(
     )
     table = table.key_by('locus')
     return table.select('effect_allele', 'noneffect_allele', 'weight')
+    # return table.select('chr', 'pos', 'effect_allele', 'noneffect_allele', 'weight')
+
 
 
 def _calculate_dosage(
@@ -375,6 +377,7 @@ def _prepare_weights_for_chunking(
     log_transform_weight: bool,
     chunk_size: typing.Optional[int],
     detailed_timings: bool,
+    validate_table: bool = True
 ) -> tuple[hl.Table, int]:
     """
     Prepares and annotates a weights table for chunked processing.
@@ -397,6 +400,11 @@ def _prepare_weights_for_chunking(
         will be processed as a single chunk.
     detailed_timings : bool
         If True, logs the duration of this preparation step.
+    validate_table: bool, default True
+        If True, the function calls `_validate_and_prepare_weights_table`. If
+        False, this validation step is skipped, assuming the table is already
+        prepared. This argument is intended for PRS batch calculations, where
+        the table validation has already been performed upstream.
 
     Returns
     -------
@@ -415,9 +423,12 @@ def _prepare_weights_for_chunking(
     with _log_timing(
         "Preparing and analyzing weights table", detailed_timings
     ):
-        full_weights_table = _validate_and_prepare_weights_table(
-            weights_table, weight_col_name, log_transform_weight
-        )
+        if validate_table:
+            full_weights_table = _validate_and_prepare_weights_table(
+                weights_table, weight_col_name, log_transform_weight
+            )
+        else:
+            full_weights_table = weights_table
         total_variants = full_weights_table.count()
         if total_variants == 0:
             raise ValueError("Weights table is empty after validation.")
