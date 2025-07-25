@@ -264,16 +264,13 @@ def _prepare_mt_non_split(
             ref_allele = mt.alleles[0]
             effect = mt.weights_info.effect_allele
             noneffect = mt.weights_info.noneffect_allele
+
             is_valid_pair = (
-                (
-                    (effect == ref_allele)
-                    & alt_alleles.contains(noneffect)
-                )
-                | (
-                    (noneffect == ref_allele)
-                    & alt_alleles.contains(effect)
-                )
+                (effect == ref_allele) & alt_alleles.contains(noneffect)
+            ) | (
+                (noneffect == ref_allele) & alt_alleles.contains(effect)
             )
+
             mt = mt.filter_rows(is_valid_pair)
 
     with _log_timing(
