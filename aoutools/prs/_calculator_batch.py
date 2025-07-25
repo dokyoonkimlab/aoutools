@@ -13,6 +13,7 @@ from ._calculator import (
     _validate_and_prepare_weights_table,
     _prepare_weights_for_chunking,
     _calculate_dosage,
+    _prepare_samples_to_keep,
 )
 from ._config import PRSConfig
 
@@ -253,11 +254,24 @@ def calculate_prs_batch(
             )
 
         logger.info(
-            "Starting batch PRS calculation (split_multi=%s). "
-            "Final result will be at: %s",
-            config.split_multi,
+            "Starting PRS calculation. Final result will be at: %s",
             output_path,
         )
+
+        # Handle currently unsupported features
+        if config.include_n_matched:
+            logger.warning(
+                "The 'include_n_matched' feature is not yet supported in "
+                "batch mode and will be ignored."
+            )
+            config.include_n_matched = False
+
+        if config.samples_to_keep is not None:
+            with _log_timing(
+                "Filtering to specified samples", config.detailed_timings
+            ):
+                samples_ht = _prepare_samples_to_keep(config.samples_to_keep)
+                vds = hl.vds.filter_samples(vds, samples_ht)
 
         # Step 1: Prepare all weights data and get unique loci
         prepared_weights, loci_to_keep = \
