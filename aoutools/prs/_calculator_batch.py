@@ -82,6 +82,85 @@ def _prepare_batch_weights_data(
     return final_prepared_weights, loci_to_keep
 
 
+# def _calculate_prs_chunk_batch(
+#     vds: hl.vds.VariantDataset,
+#     weights_tables_map: dict[str, hl.Table],
+#     prepared_weights: dict[str, hl.Table],
+#     config: PRSConfig,
+# ) -> hl.Table:
+#     """
+#     Calculates all PRS scores for a single chunk of a VDS.
+#     """
+#     # Step 1: Set up the MatrixTable and its annotation key based on the path.
+#     if config.split_multi:
+#         mt = hl.vds.split_multi(vds).variant_data
+#         mt_key = mt.row_key
+#     else:
+#         mt = vds.variant_data
+#         mt_key = mt.locus
+
+#     # Step 2: Annotate the rows. This is now common to both paths.
+#     annotation_exprs = {
+#         f'weights_info_{score_name}': (prepared_weights[score_name][mt_key])
+#         for score_name in weights_tables_map
+#     }
+#     mt = mt.annotate_rows(**annotation_exprs)
+
+#     # Step 3: Build the aggregators for each score.
+#     score_aggregators = {}
+#     for score_name in weights_tables_map:
+#         weights_info = mt[f'weights_info_{score_name}']
+
+#         # The dosage calculation is the main difference between the paths.
+#         if config.split_multi:
+#             dosage = mt.GT.n_alt_alleles()
+#         else:
+#             dosage = _calculate_dosage(mt, score_name)
+
+#         partial_score = hl.if_else(
+#             hl.is_defined(weights_info),
+#             dosage * weights_info.weight,
+#             0.0
+#         )
+#         score_aggregators[score_name] = hl.agg.sum(partial_score)
+
+#     score_aggregators = {}
+#     for score_name in weights_tables_map:
+#         weights_info = mt[f'weights_info_{score_name}']
+
+#         is_valid_for_score = hl.is_defined(weights_info)
+
+#         if config.split_multi:
+#             dosage = mt.GT.n_alt_alleles()
+#         else:
+#             dosage = _calculate_dosage(mt, score_name)
+#             # For the non-split path, conditionally apply the strict allele match
+#             if config.strict_allele_match:
+#                 alt_alleles = hl.set(mt.alleles[1:])
+#                 ref_allele = mt.alleles[0]
+#                 effect = weights_info.effect_allele
+#                 noneffect = weights_info.noneffect_allele
+
+#                 is_valid_pair = (
+#                     (effect == ref_allele) & alt_alleles.contains(noneffect)
+#                 ) | (
+#                     (noneffect == ref_allele) & alt_alleles.contains(effect)
+#                 )
+
+#                 # A score is only valid if the weight is defined AND the
+#                 # alleles match
+#                 is_valid_for_score = is_valid_for_score & is_valid_pair
+
+#         partial_score = hl.if_else(
+#             is_valid_for_score,
+#             dosage * weights_info.weight,
+#             0.0
+#         )
+#         score_aggregators[score_name] = hl.agg.sum(partial_score)
+
+#     # Step 4: Run all aggregations in a single pass.
+#     return mt.select_cols(**score_aggregators).cols().select_globals()
+
 def _calculate_prs_chunk_batch(
     vds: hl.vds.VariantDataset,
     weights_tables_map: dict[str, hl.Table],
@@ -101,30 +180,14 @@ def _calculate_prs_chunk_batch(
 
     # Step 2: Annotate the rows. This is now common to both paths.
     annotation_exprs = {
-        f'weights_info_{score_name}': (prepared_weights[score_name][mt_key])
+        f'weights_info_{score_name}': prepared_weights[score_name][mt_key]
         for score_name in weights_tables_map
     }
     mt = mt.annotate_rows(**annotation_exprs)
 
     # Step 3: Build the aggregators for each score.
     score_aggregators = {}
-    for score_name in weights_tables_map:
-        weights_info = mt[f'weights_info_{score_name}']
-
-        # The dosage calculation is the main difference between the paths.
-        if config.split_multi:
-            dosage = mt.GT.n_alt_alleles()
-        else:
-            dosage = _calculate_dosage(mt, score_name)
-
-        partial_score = hl.if_else(
-            hl.is_defined(weights_info),
-            dosage * weights_info.weight,
-            0.0
-        )
-        score_aggregators[score_name] = hl.agg.sum(partial_score)
-
-    score_aggregators = {}
+    validity_exprs = {}  # Store validity expressions to reuse for n_matched
     for score_name in weights_tables_map:
         weights_info = mt[f'weights_info_{score_name}']
 
@@ -134,7 +197,6 @@ def _calculate_prs_chunk_batch(
             dosage = mt.GT.n_alt_alleles()
         else:
             dosage = _calculate_dosage(mt, score_name)
-            # For the non-split path, conditionally apply the strict allele match
             if config.strict_allele_match:
                 alt_alleles = hl.set(mt.alleles[1:])
                 ref_allele = mt.alleles[0]
@@ -147,9 +209,9 @@ def _calculate_prs_chunk_batch(
                     (noneffect == ref_allele) & alt_alleles.contains(effect)
                 )
 
-                # A score is only valid if the weight is defined AND the
-                # alleles match
                 is_valid_for_score = is_valid_for_score & is_valid_pair
+
+        validity_exprs[score_name] = is_valid_for_score
 
         partial_score = hl.if_else(
             is_valid_for_score,
@@ -158,8 +220,29 @@ def _calculate_prs_chunk_batch(
         )
         score_aggregators[score_name] = hl.agg.sum(partial_score)
 
-    # Step 4: Run all aggregations in a single pass.
-    return mt.select_cols(**score_aggregators).cols().select_globals()
+    # Step 4: Run the PRS score aggregations.
+    prs_table = mt.select_cols(**score_aggregators).cols().select_globals()
+
+    # Step 5: If requested, calculate n_matched using an efficient single pass.
+    if config.include_n_matched:
+        with _log_timing(
+                "Computing shared variants count", config.detailed_timings
+        ):
+            # Build a dictionary of count aggregators, one for each score
+            n_matched_aggregators = {
+                f'n_matched_{score_name}': hl.agg.count_where(
+                    validity_exprs[score_name]
+                )
+                for score_name in weights_tables_map
+            }
+            # Run all count aggregations in a single pass over the rows
+            n_matched_counts = mt.aggregate_rows(
+                hl.struct(**n_matched_aggregators)
+            )
+            # Annotate the results table with the global counts
+            prs_table = prs_table.annotate(**n_matched_counts)
+
+    return prs_table
 
 
 def _process_chunks_batch(
@@ -257,14 +340,6 @@ def calculate_prs_batch(
             "Starting PRS calculation. Final result will be at: %s",
             output_path,
         )
-
-        # Handle currently unsupported features
-        if config.include_n_matched:
-            logger.warning(
-                "The 'include_n_matched' feature is not yet supported in "
-                "batch mode and will be ignored."
-            )
-            config.include_n_matched = False
 
         if config.samples_to_keep is not None:
             with _log_timing(

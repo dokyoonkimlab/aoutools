@@ -186,8 +186,7 @@ def _prepare_mt_split(
     with _log_timing(
         "Splitting multi-allelic variants and joining", detailed_timings
     ):
-        split_vds = hl.vds.split_multi(vds)
-        mt = split_vds.variant_data
+        mt = hl.vds.split_multi(vds).variant_data
 
         weights_ht_processed = weights_table.annotate(
             alleles=hl.if_else(
@@ -312,22 +311,22 @@ def _calculate_prs_chunk(
         A Hail Table containing the partial PRS results for the chunk, with
         columns for the sample ID, 'prs' score, and optionally 'n_matched'.
     """
-    with _log_timing(
-        "Planning: Filtering VDS to variants in weights table chunk",
-        config.detailed_timings,
-    ):
-        intervals_ht = (
-            weights_table.select(
-                locus_interval=hl.interval(
-                    weights_table.locus,
-                    weights_table.locus,
-                    includes_end=True,
-                )
-            )
-            .key_by('locus_interval')
-            .distinct()
-        )
-        vds = hl.vds.filter_intervals(vds, intervals_ht, keep=True)
+    # with _log_timing(
+    #     "Planning: Filtering VDS to variants in weights table chunk",
+    #     config.detailed_timings,
+    # ):
+    #     intervals_to_filter = (
+    #         weights_table.select(
+    #             interval=hl.interval(
+    #                 weights_table.locus,
+    #                 weights_table.locus,
+    #                 includes_end=True,
+    #             )
+    #         )
+    #         .key_by('interval')
+    #         .distinct()
+    #     )
+    #     vds = hl.vds.filter_intervals(vds, intervals_to_filter, keep=True)
 
     if config.split_multi:
         mt = _prepare_mt_split(
@@ -495,6 +494,23 @@ def _process_chunks(
             weights_chunk = full_weights_table.filter(
                 full_weights_table.chunk_id == i
             ).persist()
+
+        with _log_timing(
+            "Planning: Filtering VDS to variants in weights table chunk",
+            config.detailed_timings,
+        ):
+            intervals_to_filter = (
+                weights_chunk.select(
+                    interval=hl.interval(
+                        weights_chunk.locus,
+                        weights_chunk.locus,
+                        includes_end=True,
+                    )
+                )
+                .key_by('interval')
+                .distinct()
+            )
+            vds = hl.vds.filter_intervals(vds, intervals_to_filter, keep=True)
 
             chunk_prs_table = _calculate_prs_chunk(
                 weights_table=weights_chunk,
