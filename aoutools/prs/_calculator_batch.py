@@ -85,6 +85,52 @@ def _prepare_batch_weights_data(
     return final_prepared_weights, loci_to_keep
 
 
+def _build_row_annotations(
+    mt: hl.MatrixTable,
+    mt_key: hl.expr.StructExpression,
+    weights_tables_map: dict[str, hl.Table],
+    prepared_weights: dict[str, hl.Table],
+    config: PRSConfig,
+) -> dict[str, hl.expr.Expression]:
+    """
+    Returns a dictionary of row annotations including:
+    - weights_info_{score}
+    - is_valid_{score}
+    """
+    annotations = {}
+    for score_name in weights_tables_map:
+        weights_info_expr = prepared_weights[score_name][mt_key]
+        is_valid_expr = hl.is_defined(weights_info_expr)
+
+        if not config.split_multi and config.strict_allele_match:
+            is_valid_expr &= _check_allele_match(mt, weights_info_expr)
+
+        annotations[f'weights_info_{score_name}'] = weights_info_expr
+        annotations[f'is_valid_{score_name}'] = is_valid_expr
+    return annotations
+
+
+def _build_prs_agg_expr(
+    mt: hl.MatrixTable,
+    score_name: str,
+    config: PRSConfig,
+) -> hl.expr.Aggregation:
+    """
+    Returns an aggregation expression for a given score name.
+    """
+    weights_info = mt[f'weights_info_{score_name}']
+    is_valid = mt[f'is_valid_{score_name}']
+
+    # Use appropriate dosage calculation based on whether VDS is split
+    if config.split_multi:
+        dosage = mt.GT.n_alt_alleles()
+    else:
+        dosage = _calculate_dosage(mt, score_name)
+
+    # Final score = sum of (dosage * weight) for valid variants
+    return hl.agg.sum(hl.if_else(is_valid, dosage * weights_info.weight, 0.0))
+
+
 def _calculate_prs_chunk_batch(
     vds: hl.vds.VariantDataset,
     weights_tables_map: dict[str, hl.Table],
@@ -94,11 +140,12 @@ def _calculate_prs_chunk_batch(
     """
     Calculates all PRS scores for a single chunk of a VDS.
     """
-    # Step 1: Set up the MatrixTable and its annotation key based on the path.
+
+    # Step 1: Get MatrixTable from VDS, optionally splitting multi-allelics
     if config.split_multi:
         with _log_timing(
-            "Planning: Splitting multi-allelic variants",
-            config.detailed_timings
+                "Planning: Splitting multi-allelic variants",
+                config.detailed_timings
         ):
             mt = hl.vds.split_multi(vds).variant_data
             mt_key = mt.row_key
@@ -106,69 +153,40 @@ def _calculate_prs_chunk_batch(
         mt = vds.variant_data
         mt_key = mt.locus
 
+    # Step 2: Annotate MatrixTable rows with weights info and validity masks
     with _log_timing(
-        "Planning: Calculating and aggregating PRS scores",
-        config.detailed_timings
+            "Planning: Calculating and aggregating PRS scores",
+            config.detailed_timings
     ):
-    # Step 2: Annotate the rows with weights info.
-        annotation_exprs = {
-            f'weights_info_{score_name}': prepared_weights[score_name][mt_key]
+        row_annotations = _build_row_annotations(
+            mt, mt_key, weights_tables_map, prepared_weights, config
+        )
+        mt = mt.annotate_rows(**row_annotations)
+
+        # Step 3: Build score aggregators across columns (i.e., samples)
+        score_aggregators = {
+            score_name: _build_prs_agg_expr(mt, score_name, config)
             for score_name in weights_tables_map
         }
-        mt = mt.annotate_rows(**annotation_exprs)
 
-        # Step 3: Pre-calculate and annotate the validity of each variant for
-        # each score. This simplifies the expressions passed to the aggregators
-        # to avoid internal Hail errors.
-        validity_annotations = {}
-        for score_name in weights_tables_map:
-            weights_info = mt[f'weights_info_{score_name}']
-            is_valid_for_score = hl.is_defined(weights_info)
-
-            if not config.split_multi and config.strict_allele_match:
-                is_valid_pair = _check_allele_match(mt, weights_info)
-                is_valid_for_score &= is_valid_pair
-
-            validity_annotations[f'is_valid_{score_name}'] = is_valid_for_score
-
-        # Materialize the validity annotations
-        # May not necessary but to avoid internal Hail errors in agg.count_where.
-        # Revisiting this later may be needed.
-        mt = mt.annotate_rows(**validity_annotations)
-
-        # Step 4: Build the aggregators for each score using the pre-calculated
-        # validity.
-        score_aggregators = {}
-        for score_name in weights_tables_map:
-            weights_info = mt[f'weights_info_{score_name}']
-            is_valid_for_score = mt[f'is_valid_{score_name}']
-
-            if config.split_multi:
-                dosage = mt.GT.n_alt_alleles()
-            else:
-                dosage = _calculate_dosage(mt, score_name)
-
-            partial_score = hl.if_else(
-                is_valid_for_score, dosage * weights_info.weight, 0.0
-            )
-            score_aggregators[score_name] = hl.agg.sum(partial_score)
-
+        # Compute and return the per-sample PRS results
         prs_table = mt.select_cols(**score_aggregators).cols().select_globals()
 
-   # Step 5: If requested, calculate n_matched using an efficient single pass.
+    # Step 4 (Optional): Compute number of matched variants (n_matched_*) if
+    # requested
     if config.include_n_matched:
         with _log_timing(
                 "Computing shared variants count", config.detailed_timings
         ):
-            n_matched_aggregators = {
+            n_matched_aggs = {
                 f'n_matched_{score_name}': hl.agg.count_where(
                     mt[f'is_valid_{score_name}']
-                ) for score_name in weights_tables_map
+                )
+                for score_name in weights_tables_map
             }
-            n_matched_counts = mt.aggregate_rows(
-                hl.struct(**n_matched_aggregators)
-            )
+            n_matched_counts = mt.aggregate_rows(hl.struct(**n_matched_aggs))
             prs_table = prs_table.annotate(**n_matched_counts)
+
     return prs_table
 
 
