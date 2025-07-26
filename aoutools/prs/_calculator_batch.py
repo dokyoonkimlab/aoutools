@@ -6,14 +6,15 @@ import hail as hl
 import hailtop.fs as hfs
 import pandas as pd
 from aoutools._utils.helpers import SimpleTimer
-from ._utils import (
-    _log_timing,
-)
-from ._calculator import (
-    _validate_and_prepare_weights_table,
-    _prepare_weights_for_chunking,
-    _calculate_dosage,
+from ._utils import _log_timing
+from ._calculator_utils import (
     _prepare_samples_to_keep,
+    _validate_and_prepare_weights_table,
+    _orient_weights_for_split,
+    _check_allele_match,
+    _calculate_dosage,
+    _prepare_weights_for_chunking,
+    _create_1bp_intervals,
 )
 from ._config import PRSConfig
 
@@ -43,9 +44,10 @@ def _prepare_batch_weights_data(
     with _log_timing(
         "Preparing all weights tables", config.detailed_timings
     ):
-        for score_name, table in weights_tables_map.items():
+        for score_name, weights_table in weights_tables_map.items():
             prepared_table = _validate_and_prepare_weights_table(
-                table, config.weight_col_name, config.log_transform_weight
+                weights_table=weights_table,
+                config=config
             )
             prepared_weights[score_name] = prepared_table
             all_loci_tables.append(prepared_table.select())
@@ -62,104 +64,26 @@ def _prepare_batch_weights_data(
             config.detailed_timings
         ):
             for score_name, ht in prepared_weights.items():
-                processed_ht = ht.annotate(
-                    alleles=hl.if_else(
-                        config.ref_is_effect_allele,
-                        [ht.effect_allele, ht.noneffect_allele],
-                        [ht.noneffect_allele, ht.effect_allele]
-                    ),
-                    weight=hl.if_else(
-                        config.ref_is_effect_allele,
-                        -ht.weight,
-                        ht.weight
-                    )
-                ).key_by('locus', 'alleles')
-                final_prepared_weights[score_name] = processed_ht
+                # processed_ht = ht.annotate(
+                #     alleles=hl.if_else(
+                #         config.ref_is_effect_allele,
+                #         [ht.effect_allele, ht.noneffect_allele],
+                #         [ht.noneffect_allele, ht.effect_allele]
+                #     ),
+                #     weight=hl.if_else(
+                #         config.ref_is_effect_allele,
+                #         -ht.weight,
+                #         ht.weight
+                #     )
+                # ).key_by('locus', 'alleles')
+                final_prepared_weights[score_name] = \
+                    _orient_weights_for_split(ht, config)
     else:
         final_prepared_weights = prepared_weights
 
     loci_to_keep = hl.Table.union(*all_loci_tables).key_by('locus').distinct()
     return final_prepared_weights, loci_to_keep
 
-
-# def _calculate_prs_chunk_batch(
-#     vds: hl.vds.VariantDataset,
-#     weights_tables_map: dict[str, hl.Table],
-#     prepared_weights: dict[str, hl.Table],
-#     config: PRSConfig,
-# ) -> hl.Table:
-#     """
-#     Calculates all PRS scores for a single chunk of a VDS.
-#     """
-#     # Step 1: Set up the MatrixTable and its annotation key based on the path.
-#     if config.split_multi:
-#         mt = hl.vds.split_multi(vds).variant_data
-#         mt_key = mt.row_key
-#     else:
-#         mt = vds.variant_data
-#         mt_key = mt.locus
-
-#     # Step 2: Annotate the rows. This is now common to both paths.
-#     annotation_exprs = {
-#         f'weights_info_{score_name}': (prepared_weights[score_name][mt_key])
-#         for score_name in weights_tables_map
-#     }
-#     mt = mt.annotate_rows(**annotation_exprs)
-
-#     # Step 3: Build the aggregators for each score.
-#     score_aggregators = {}
-#     for score_name in weights_tables_map:
-#         weights_info = mt[f'weights_info_{score_name}']
-
-#         # The dosage calculation is the main difference between the paths.
-#         if config.split_multi:
-#             dosage = mt.GT.n_alt_alleles()
-#         else:
-#             dosage = _calculate_dosage(mt, score_name)
-
-#         partial_score = hl.if_else(
-#             hl.is_defined(weights_info),
-#             dosage * weights_info.weight,
-#             0.0
-#         )
-#         score_aggregators[score_name] = hl.agg.sum(partial_score)
-
-#     score_aggregators = {}
-#     for score_name in weights_tables_map:
-#         weights_info = mt[f'weights_info_{score_name}']
-
-#         is_valid_for_score = hl.is_defined(weights_info)
-
-#         if config.split_multi:
-#             dosage = mt.GT.n_alt_alleles()
-#         else:
-#             dosage = _calculate_dosage(mt, score_name)
-#             # For the non-split path, conditionally apply the strict allele match
-#             if config.strict_allele_match:
-#                 alt_alleles = hl.set(mt.alleles[1:])
-#                 ref_allele = mt.alleles[0]
-#                 effect = weights_info.effect_allele
-#                 noneffect = weights_info.noneffect_allele
-
-#                 is_valid_pair = (
-#                     (effect == ref_allele) & alt_alleles.contains(noneffect)
-#                 ) | (
-#                     (noneffect == ref_allele) & alt_alleles.contains(effect)
-#                 )
-
-#                 # A score is only valid if the weight is defined AND the
-#                 # alleles match
-#                 is_valid_for_score = is_valid_for_score & is_valid_pair
-
-#         partial_score = hl.if_else(
-#             is_valid_for_score,
-#             dosage * weights_info.weight,
-#             0.0
-#         )
-#         score_aggregators[score_name] = hl.agg.sum(partial_score)
-
-#     # Step 4: Run all aggregations in a single pass.
-#     return mt.select_cols(**score_aggregators).cols().select_globals()
 
 def _calculate_prs_chunk_batch(
     vds: hl.vds.VariantDataset,
@@ -172,76 +96,79 @@ def _calculate_prs_chunk_batch(
     """
     # Step 1: Set up the MatrixTable and its annotation key based on the path.
     if config.split_multi:
-        mt = hl.vds.split_multi(vds).variant_data
-        mt_key = mt.row_key
+        with _log_timing(
+            "Planning: Splitting multi-allelic variants",
+            config.detailed_timings
+        ):
+            mt = hl.vds.split_multi(vds).variant_data
+            mt_key = mt.row_key
     else:
         mt = vds.variant_data
         mt_key = mt.locus
 
-    # Step 2: Annotate the rows. This is now common to both paths.
-    annotation_exprs = {
-        f'weights_info_{score_name}': prepared_weights[score_name][mt_key]
-        for score_name in weights_tables_map
-    }
-    mt = mt.annotate_rows(**annotation_exprs)
+    with _log_timing(
+        "Planning: Calculating and aggregating PRS scores",
+        config.detailed_timings
+    ):
+    # Step 2: Annotate the rows with weights info.
+        annotation_exprs = {
+            f'weights_info_{score_name}': prepared_weights[score_name][mt_key]
+            for score_name in weights_tables_map
+        }
+        mt = mt.annotate_rows(**annotation_exprs)
 
-    # Step 3: Build the aggregators for each score.
-    score_aggregators = {}
-    validity_exprs = {}  # Store validity expressions to reuse for n_matched
-    for score_name in weights_tables_map:
-        weights_info = mt[f'weights_info_{score_name}']
+        # Step 3: Pre-calculate and annotate the validity of each variant for
+        # each score. This simplifies the expressions passed to the aggregators
+        # to avoid internal Hail errors.
+        validity_annotations = {}
+        for score_name in weights_tables_map:
+            weights_info = mt[f'weights_info_{score_name}']
+            is_valid_for_score = hl.is_defined(weights_info)
 
-        is_valid_for_score = hl.is_defined(weights_info)
+            if not config.split_multi and config.strict_allele_match:
+                is_valid_pair = _check_allele_match(mt, weights_info)
+                is_valid_for_score &= is_valid_pair
 
-        if config.split_multi:
-            dosage = mt.GT.n_alt_alleles()
-        else:
-            dosage = _calculate_dosage(mt, score_name)
-            if config.strict_allele_match:
-                alt_alleles = hl.set(mt.alleles[1:])
-                ref_allele = mt.alleles[0]
-                effect = weights_info.effect_allele
-                noneffect = weights_info.noneffect_allele
+            validity_annotations[f'is_valid_{score_name}'] = is_valid_for_score
 
-                is_valid_pair = (
-                    (effect == ref_allele) & alt_alleles.contains(noneffect)
-                ) | (
-                    (noneffect == ref_allele) & alt_alleles.contains(effect)
-                )
+        # Materialize the validity annotations
+        # May not necessary but to avoid internal Hail errors in agg.count_where.
+        # Revisiting this later may be needed.
+        mt = mt.annotate_rows(**validity_annotations)
 
-                is_valid_for_score = is_valid_for_score & is_valid_pair
+        # Step 4: Build the aggregators for each score using the pre-calculated
+        # validity.
+        score_aggregators = {}
+        for score_name in weights_tables_map:
+            weights_info = mt[f'weights_info_{score_name}']
+            is_valid_for_score = mt[f'is_valid_{score_name}']
 
-        validity_exprs[score_name] = is_valid_for_score
+            if config.split_multi:
+                dosage = mt.GT.n_alt_alleles()
+            else:
+                dosage = _calculate_dosage(mt, score_name)
 
-        partial_score = hl.if_else(
-            is_valid_for_score,
-            dosage * weights_info.weight,
-            0.0
-        )
-        score_aggregators[score_name] = hl.agg.sum(partial_score)
+            partial_score = hl.if_else(
+                is_valid_for_score, dosage * weights_info.weight, 0.0
+            )
+            score_aggregators[score_name] = hl.agg.sum(partial_score)
 
-    # Step 4: Run the PRS score aggregations.
-    prs_table = mt.select_cols(**score_aggregators).cols().select_globals()
+        prs_table = mt.select_cols(**score_aggregators).cols().select_globals()
 
-    # Step 5: If requested, calculate n_matched using an efficient single pass.
+   # Step 5: If requested, calculate n_matched using an efficient single pass.
     if config.include_n_matched:
         with _log_timing(
                 "Computing shared variants count", config.detailed_timings
         ):
-            # Build a dictionary of count aggregators, one for each score
             n_matched_aggregators = {
                 f'n_matched_{score_name}': hl.agg.count_where(
-                    validity_exprs[score_name]
-                )
-                for score_name in weights_tables_map
+                    mt[f'is_valid_{score_name}']
+                ) for score_name in weights_tables_map
             }
-            # Run all count aggregations in a single pass over the rows
             n_matched_counts = mt.aggregate_rows(
                 hl.struct(**n_matched_aggregators)
             )
-            # Annotate the results table with the global counts
             prs_table = prs_table.annotate(**n_matched_counts)
-
     return prs_table
 
 
@@ -266,14 +193,7 @@ def _process_chunks_batch(
                 chunked_loci.chunk_id == i
             ).persist()
 
-            intervals_to_filter = loci_chunk.select(
-                interval=hl.interval(
-                    loci_chunk.locus,
-                    loci_chunk.locus,
-                    includes_end=True
-                )
-            ).key_by('interval')
-
+            intervals_to_filter = _create_1bp_intervals(loci_chunk)
             vds = hl.vds.filter_intervals(vds, intervals_to_filter, keep=True)
 
             chunk_prs_table = _calculate_prs_chunk_batch(
@@ -293,8 +213,9 @@ def _process_chunks_batch(
 def _aggregate_and_export_batch(
     partial_dfs: list[pd.DataFrame],
     output_path: str,
-    sample_id_col: str,
-    detailed_timings: bool,
+    # sample_id_col: str,
+    # detailed_timings: bool,
+    config: PRSConfig
 ) -> None:
     """
     Aggregates partial results from per-score aggregation and exports.
@@ -306,13 +227,13 @@ def _aggregate_and_export_batch(
         return
 
     with _log_timing(
-            "Aggregating batch results with Pandas", detailed_timings
+            "Aggregating batch results with Pandas", config.detailed_timings
     ):
         combined_df = pd.concat(partial_dfs, ignore_index=True)
-        final_df = combined_df.groupby(sample_id_col).sum()
+        final_df = combined_df.groupby(config.sample_id_col).sum()
 
     with _log_timing(
-            f"Exporting final result to {output_path}", detailed_timings
+            f"Exporting final result to {output_path}", config.detailed_timings
     ):
         with hfs.open(output_path, 'w') as f:
             final_df.to_csv(f, sep='\t', index=True, header=True)
@@ -366,10 +287,7 @@ def calculate_prs_batch(
 
         chunked_loci, n_chunks = _prepare_weights_for_chunking(
             weights_table=loci_to_keep,
-            weight_col_name='',
-            log_transform_weight=False,
-            chunk_size=config.chunk_size,
-            detailed_timings=config.detailed_timings,
+            config=config,
             validate_table=False
         )
 
@@ -387,8 +305,7 @@ def calculate_prs_batch(
         _aggregate_and_export_batch(
             partial_dfs=partial_dfs,
             output_path=output_path,
-            sample_id_col=config.sample_id_col,
-            detailed_timings=config.detailed_timings
+            config=config
         )
 
     logger.info(

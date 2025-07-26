@@ -1,7 +1,6 @@
 """Utility functions for Hail data processing"""
 
 import os
-import typing
 import logging
 from time import perf_counter
 from contextlib import contextmanager
@@ -123,46 +122,3 @@ def _standardize_chromosome_column(table: hl.Table) -> hl.Table:
         table = table.annotate(chr=hl.str('chr') + table.chr)
 
     return table
-
-
-def _prepare_samples_to_keep(
-    samples: typing.Union[hl.Table, list, set, tuple, int, str]
-) -> hl.Table:
-    """
-    Converts a flexible list of samples into a keyed Hail Table.
-
-    This helper function provides flexibility by accepting various common
-    Python collection types (list, set, tuple) or single values (int, str)
-    and converting them into a standardized Hail Table with a string key 's',
-    which is required for filtering Hail objects.
-
-    Parameters
-    ----------
-    samples : hail.Table, list, set, tuple, int, or str
-        The collection of sample IDs to prepare.
-
-    Returns
-    -------
-    hail.Table
-        A Hail Table keyed by 's' containing the sample IDs as strings.
-
-    Raises
-    ------
-    TypeError
-        If the input `samples` object is not one of the supported types.
-    """
-    if isinstance(samples, hl.Table):
-        return samples
-
-    sample_list = []
-    if isinstance(samples, (int, float, str)):
-        sample_list = [str(samples)]
-    elif isinstance(samples, (list, set, tuple)):
-        sample_list = [str(s) for s in samples]
-    else:
-        raise TypeError(f"Unsupported type for samples_to_keep: {type(samples)}.")
-
-    samples_ht = hl.Table.parallelize(
-        [{'s': s} for s in sample_list], hl.tstruct(s=hl.tstr)
-    )
-    return samples_ht.key_by('s')

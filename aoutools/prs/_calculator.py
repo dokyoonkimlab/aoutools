@@ -2,161 +2,94 @@
 
 import typing
 import logging
-from math import ceil
 import hail as hl
 import hailtop.fs as hfs
 import pandas as pd
 from aoutools._utils.helpers import SimpleTimer
-from ._utils import (
-    _log_timing,
-    _standardize_chromosome_column,
+from ._utils import _log_timing
+from ._calculator_utils import (
     _prepare_samples_to_keep,
+    _orient_weights_for_split,
+    _check_allele_match,
+    _calculate_dosage,
+    _prepare_weights_for_chunking,
+    _create_1bp_intervals,
 )
 from ._config import PRSConfig
 
 logger = logging.getLogger(__name__)
 
 
-def _validate_and_prepare_weights_table(
-    table: hl.Table,
-    weight_col_name: str,
-    log_transform_weight: bool
-) -> hl.Table:
-    """
-    Validates and prepares a single weights table for PRS calculation.
+# def _validate_and_prepare_weights_table(
+#     table: hl.Table,
+#     config: PRSConfig,
+# ) -> hl.Table:
+#     """
+#     Validates and prepares a single weights table for PRS calculation.
 
-    This function ensures the table has the required columns with the correct
-    types, standardizes the chromosome format, handles the weight column,
-    and keys the table by locus for joining with the VDS.
+#     This function ensures the table has the required columns with the correct
+#     types, standardizes the chromosome format, handles the weight column,
+#     and keys the table by locus for joining with the VDS.
 
-    Parameters
-    ----------
-    table : hail.Table
-        The input weights table. Must contain 'chr', 'pos', 'effect_allele',
-        'noneffect_allele', and a weight column.
-    weight_col_name : str
-        The name of the column containing the effect weights.
-    log_transform_weight : bool
-        If True, applies a natural log transformation to the weight column.
+#     Parameters
+#     ----------
+#     table : hail.Table
+#         The input weights table. Must contain 'chr', 'pos', 'effect_allele',
+#         'noneffect_allele', and a weight column.
+#     weight_col_name : str
+#         The name of the column containing the effect weights.
+#     log_transform_weight : bool
+#         If True, applies a natural log transformation to the weight column.
 
-    Returns
-    -------
-    hail.Table
-        A validated, standardized, and keyed Hail Table.
+#     Returns
+#     -------
+#     hail.Table
+#         A validated, standardized, and keyed Hail Table.
 
-    Raises
-    ------
-    TypeError
-        If the specified `weight_col_name` does not exist, if other required
-        columns are missing, or if any required column has an incorrect
-        data type.
-    """
-    if weight_col_name not in table.row:
-        raise TypeError(
-            f"Specified weight column '{weight_col_name}' not found in table."
-        )
-    table = table.rename({weight_col_name: 'weight'})
+#     Raises
+#     ------
+#     TypeError
+#         If the specified `weight_col_name` does not exist, if other required
+#         columns are missing, or if any required column has an incorrect
+#         data type.
+#     """
+#     if config.weight_col_name not in table.row:
+#         raise TypeError(
+#             f"Specified weight column '{config.weight_col_name}' not found in table."
+#         )
+#     table = table.rename({config.weight_col_name: 'weight'})
 
-    required_cols = {
-        'chr': hl.tstr,
-        'pos': hl.tint32,
-        'effect_allele': hl.tstr,
-        'noneffect_allele': hl.tstr,
-        'weight': hl.tfloat64,
-    }
-    for col, expected_type in required_cols.items():
-        if col not in table.row:
-            raise TypeError(f"Weights table is missing required column: '{col}'.")
-        if table[col].dtype != expected_type:
-            raise TypeError(f"Column '{col}' has incorrect type.")
+#     required_cols = {
+#         'chr': hl.tstr,
+#         'pos': hl.tint32,
+#         'effect_allele': hl.tstr,
+#         'noneffect_allele': hl.tstr,
+#         'weight': hl.tfloat64,
+#     }
+#     for col, expected_type in required_cols.items():
+#         if col not in table.row:
+#             raise TypeError(f"Weights table is missing required column: '{col}'.")
+#         if table[col].dtype != expected_type:
+#             raise TypeError(f"Column '{col}' has incorrect type.")
 
-    table = _standardize_chromosome_column(table)
-    if log_transform_weight:
-        table = table.annotate(weight=hl.log(table.weight))
+#     table = _standardize_chromosome_column(table)
+#     if config.log_transform_weight:
+#         table = table.annotate(weight=hl.log(table.weight))
 
-    table = table.annotate(
-        locus=hl.locus(table.chr, table.pos, reference_genome='GRCh38')
-    )
-    table = table.key_by('locus')
-    return table.select('effect_allele', 'noneffect_allele', 'weight')
-    # return table.select('chr', 'pos', 'effect_allele', 'noneffect_allele', 'weight')
+#     table = table.annotate(
+#         locus=hl.locus(table.chr, table.pos, reference_genome='GRCh38')
+#     )
+#     table = table.key_by('locus')
+#     return table.select('effect_allele', 'noneffect_allele', 'weight')
 
-
-
-def _calculate_dosage(
-    mt: hl.MatrixTable,
-    score_name: str = ''
-) -> hl.expr.Int32Expression:
-    """
-    Calculates the dosage of the effect allele for a specific score.
-
-    This expression handles both global (GT) and local (LGT/LA) genotype
-    encoding formats, which enables sparse storage of homozygous reference
-    calls. It correctly computes dosage at multi-allelic sites.
-
-    Parameters
-    ----------
-    mt : hail.MatrixTable
-        MatrixTable annotated with a `weights_info` struct. For batch mode,
-        the struct is named `weights_info_{score_name}`.
-    score_name : str, optional
-        The identifier for the PRS being calculated, used to access the
-        correct weights annotation in batch mode.
-
-    Returns
-    -------
-    hail.expr.Int32Expression
-        An expression for the effect allele dosage.
-    """
-    weights_field_name = (
-        f'weights_info_{score_name}' if score_name else 'weights_info'
-    )
-    effect_allele = mt[weights_field_name].effect_allele
-    ref_is_effect = effect_allele == mt.alleles[0]
-
-    # Check for 'GT' field to handle different VDS versions by their
-    # genotype encoding scheme.
-    if 'GT' in mt.entry:
-        # Global-indexed format: 'GT' contains indices that refer
-        # directly to the global 'alleles' array.
-        # Example: if GT is [0, 1] and mt.alleles is ['A', 'G', 'T'],
-        # this expression reconstructs the sample's alleles as ['A', 'G'].
-        alleles_expr = hl.or_missing(
-            hl.is_defined(mt.GT),
-            hl.array([mt.alleles[mt.GT[0]], mt.alleles[mt.GT[1]]])
-        )
-    else:
-        # Local-indexed format: 'LGT' indices refer to the 'LA'
-        # (local-to-global) map, which then refers to 'alleles'.
-        # Example: LGT=[0, 1], LA=[0, 2], mt.alleles=['A', 'C', 'G']
-        # 1. LGT[0] is 0. LA[0] is 0. mt.alleles[0] is 'A'.
-        # 2. LGT[1] is 1. LA[1] is 2. mt.alleles[2] is 'G'.
-        # The reconstructed alleles are ['A', 'G'].
-        alleles_expr = hl.or_missing(
-            hl.is_defined(mt.LGT) & hl.is_defined(mt.LA),
-            hl.array([
-                mt.alleles[hl.or_else(mt.LA[mt.LGT[0]], 0)],
-                mt.alleles[hl.or_else(mt.LA[mt.LGT[1]], 0)]
-            ])
-        )
-
-    # The hl.case statement cleanly handles missing genotypes by assuming
-    # they are homozygous reference.
-    return hl.case() \
-        .when(hl.is_missing(alleles_expr) & ref_is_effect, 2) \
-        .when(hl.is_missing(alleles_expr) & ~ref_is_effect, 0) \
-        .default(
-            hl.or_else(alleles_expr, hl.empty_array(hl.tstr)).filter(
-                lambda allele: allele == effect_allele
-            ).length()
-        )
 
 
 def _prepare_mt_split(
     vds: hl.vds.VariantDataset,
     weights_table: hl.Table,
-    ref_is_effect_allele: bool,
-    detailed_timings: bool,
+    # ref_is_effect_allele: bool,
+    # detailed_timings: bool,
+    config: PRSConfig
 ) -> hl.MatrixTable:
     """
     Prepares a MatrixTable for the split-multi PRS calculation path.
@@ -184,22 +117,24 @@ def _prepare_mt_split(
         and `dosage` for the specified effect allele.
     """
     with _log_timing(
-        "Splitting multi-allelic variants and joining", detailed_timings
+        "Planning: Splitting multi-allelic variants and joining",
+        config.detailed_timings
     ):
         mt = hl.vds.split_multi(vds).variant_data
 
-        weights_ht_processed = weights_table.annotate(
-            alleles=hl.if_else(
-                ref_is_effect_allele,
-                [weights_table.effect_allele, weights_table.noneffect_allele],
-                [weights_table.noneffect_allele, weights_table.effect_allele],
-            ),
-            weight=hl.if_else(
-                ref_is_effect_allele,
-                -weights_table.weight,
-                weights_table.weight,
-            ),
-        ).key_by('locus', 'alleles')
+        # weights_ht_processed = weights_table.annotate(
+        #     alleles=hl.if_else(
+        #         ref_is_effect_allele,
+        #         [weights_table.effect_allele, weights_table.noneffect_allele],
+        #         [weights_table.noneffect_allele, weights_table.effect_allele],
+        #     ),
+        #     weight=hl.if_else(
+        #         ref_is_effect_allele,
+        #         -weights_table.weight,
+        #         weights_table.weight,
+        #     ),
+        # ).key_by('locus', 'alleles')
+        weights_ht_processed = _orient_weights_for_split(weights_table, config)
 
         mt = mt.annotate_rows(
             weights_info=weights_ht_processed[mt.row_key]
@@ -208,7 +143,7 @@ def _prepare_mt_split(
 
     with _log_timing(
         "Planning: Calculating per-variant dosage",
-        detailed_timings,
+        config.detailed_timings,
     ):
         # After splitting, LGT is converted to GT, so we can
         # directly and safely use the built-in dosage calculator.
@@ -221,8 +156,9 @@ def _prepare_mt_split(
 def _prepare_mt_non_split(
     vds: hl.vds.VariantDataset,
     weights_table: hl.Table,
-    strict_allele_match: bool,
-    detailed_timings: bool,
+    # strict_allele_match: bool,
+    # detailed_timings: bool,
+    config: PRSConfig
 ) -> hl.MatrixTable:
     """
     Prepares a MatrixTable for the non-split PRS calculation path.
@@ -252,29 +188,33 @@ def _prepare_mt_non_split(
     mt = vds.variant_data
 
     with _log_timing(
-        "Planning: Annotating variants with weights", detailed_timings
+        "Planning: Annotating variants with weights", config.detailed_timings
     ):
         mt = mt.annotate_rows(weights_info=weights_table[mt.locus])
         mt = mt.filter_rows(hl.is_defined(mt.weights_info))
 
-    if strict_allele_match:
-        with _log_timing("Performing strict allele match", detailed_timings):
-            alt_alleles = hl.set(mt.alleles[1:])
-            ref_allele = mt.alleles[0]
-            effect = mt.weights_info.effect_allele
-            noneffect = mt.weights_info.noneffect_allele
+    if config.strict_allele_match:
+        with _log_timing(
+                "Planning: Performing strict allele match",
+                config.detailed_timings
+        ):
+            # alt_alleles = hl.set(mt.alleles[1:])
+            # ref_allele = mt.alleles[0]
+            # effect = mt.weights_info.effect_allele
+            # noneffect = mt.weights_info.noneffect_allele
 
-            is_valid_pair = (
-                (effect == ref_allele) & alt_alleles.contains(noneffect)
-            ) | (
-                (noneffect == ref_allele) & alt_alleles.contains(effect)
-            )
+            # is_valid_pair = (
+            #     (effect == ref_allele) & alt_alleles.contains(noneffect)
+            # ) | (
+            #     (noneffect == ref_allele) & alt_alleles.contains(effect)
+            # )
+            is_valid_pair = _check_allele_match(mt, mt.weights_info)
 
             mt = mt.filter_rows(is_valid_pair)
 
     with _log_timing(
         "Planning: Calculating per-variant dosage",
-        detailed_timings,
+        config.detailed_timings,
     ):
         mt = mt.annotate_entries(dosage=_calculate_dosage(mt))
 
@@ -284,7 +224,7 @@ def _prepare_mt_non_split(
 def _calculate_prs_chunk(
     weights_table: hl.Table,
     vds: hl.vds.VariantDataset,
-    config: PRSConfig,
+    config: PRSConfig
 ) -> hl.Table:
     """
     Calculates a Polygenic Risk Score (PRS) for a single chunk of variants.
@@ -332,15 +272,13 @@ def _calculate_prs_chunk(
         mt = _prepare_mt_split(
             vds=vds,
             weights_table=weights_table,
-            ref_is_effect_allele=config.ref_is_effect_allele,
-            detailed_timings=config.detailed_timings,
+            config=config,
         )
     else:
         mt = _prepare_mt_non_split(
             vds=vds,
             weights_table=weights_table,
-            strict_allele_match=config.strict_allele_match,
-            detailed_timings=config.detailed_timings,
+            config=config,
         )
 
     # Chunks aggregation
@@ -367,95 +305,11 @@ def _calculate_prs_chunk(
     return prs_table.select_globals()
 
 
-def _prepare_weights_for_chunking(
-    weights_table: hl.Table,
-    weight_col_name: str,
-    log_transform_weight: bool,
-    chunk_size: typing.Optional[int],
-    detailed_timings: bool,
-    validate_table: bool = True
-) -> tuple[hl.Table, int]:
-    """
-    Prepares and annotates a weights table for chunked processing.
-
-    This helper function takes the raw weights table, validates it, calculates
-    the number of chunks based on the `chunk_size`, and adds a `chunk_id`
-    column to each row. This prepares the table for iterative processing in
-    the main PRS calculation loop.
-
-    Parameters
-    ----------
-    weights_table : hail.Table
-        The raw input weights table from the user.
-    weight_col_name : str
-        The name of the column containing effect weights.
-    log_transform_weight : bool
-        If True, log-transforms the weight column.
-    chunk_size : int, optional
-        The desired number of variants per chunk. If None, the entire table
-        will be processed as a single chunk.
-    detailed_timings : bool
-        If True, logs the duration of this preparation step.
-    validate_table: bool, default True
-        If True, the function calls `_validate_and_prepare_weights_table`. If
-        False, this validation step is skipped, assuming the table is already
-        prepared. This argument is intended for PRS batch calculations, where
-        the table validation has already been performed upstream.
-
-    Returns
-    -------
-    tuple[hail.Table, int]
-        A tuple containing:
-        - The fully validated and prepared weights table, now annotated with a
-          `chunk_id` for each row.
-        - An integer representing the total number of chunks.
-
-    Raises
-    ------
-    ValueError
-        If the `weights_table` is empty after the initial validation and
-        filtering steps.
-    """
-    with _log_timing(
-        "Preparing and analyzing weights table", detailed_timings
-    ):
-        if validate_table:
-            full_weights_table = _validate_and_prepare_weights_table(
-                weights_table, weight_col_name, log_transform_weight
-            )
-        else:
-            full_weights_table = weights_table
-        total_variants = full_weights_table.count()
-        if total_variants == 0:
-            raise ValueError("Weights table is empty after validation.")
-
-        effective_chunk_size = chunk_size or total_variants
-        n_chunks = ceil(total_variants / effective_chunk_size)
-        logger.info(
-            "Total variants: %d, Number of chunks: %d",
-            total_variants,
-            n_chunks,
-        )
-
-        # Don't use chain (hl.Table.add_index().annotate()) as it is not find
-        # the idx at the annotation step due to lazy eval.
-        full_weights_table = full_weights_table.add_index()
-        full_weights_table = full_weights_table.annotate(
-            chunk_id=hl.int(
-                full_weights_table.idx / effective_chunk_size
-            )
-        )
-        # Note:add_index does not reset the existing key (locus), so don't have
-        # to key_by('locus) again
-
-        return full_weights_table, n_chunks
-
-
 def _process_chunks(
     full_weights_table: hl.Table,
     n_chunks: int,
     vds: hl.vds.VariantDataset,
-    config: PRSConfig,
+    config: PRSConfig
 ) -> list[pd.DataFrame]:
     """
     Iteratively processes each chunk of the weights table.
@@ -499,17 +353,7 @@ def _process_chunks(
             "Planning: Filtering VDS to variants in weights table chunk",
             config.detailed_timings,
         ):
-            intervals_to_filter = (
-                weights_chunk.select(
-                    interval=hl.interval(
-                        weights_chunk.locus,
-                        weights_chunk.locus,
-                        includes_end=True,
-                    )
-                )
-                .key_by('interval')
-                .distinct()
-            )
+            intervals_to_filter = _create_1bp_intervals(weights_chunk)
             vds = hl.vds.filter_intervals(vds, intervals_to_filter, keep=True)
 
             chunk_prs_table = _calculate_prs_chunk(
@@ -525,8 +369,9 @@ def _process_chunks(
 def _aggregate_and_export(
     partial_dfs: list[pd.DataFrame],
     output_path: str,
-    sample_id_col: str,
-    detailed_timings: bool,
+    # sample_id_col: str,
+    # detailed_timings: bool,
+    config: PRSConfig
 ) -> None:
     """
     Aggregates partial Pandas DataFrame results and exports to a final file.
@@ -558,21 +403,24 @@ def _aggregate_and_export(
         )
         return
 
-    with _log_timing("Aggregating results with Pandas", detailed_timings):
+    with _log_timing(
+            "Aggregating results with Pandas", config.detailed_timings
+    ):
         combined_df = pd.concat(partial_dfs, ignore_index=True)
-        final_df = combined_df.groupby(sample_id_col).sum()
+        final_df = combined_df.groupby(config.sample_id_col).sum()
 
     with _log_timing(
-            f"Exporting final result to {output_path}", detailed_timings
+            f"Exporting final result to {output_path}", config.detailed_timings
     ):
         with hfs.open(output_path, 'w') as f:
             final_df.to_csv(f, sep='\t', index=True, header=True)
+
 
 def calculate_prs(
     weights_table: hl.Table,
     vds: hl.vds.VariantDataset,
     output_path: str,
-    config: PRSConfig = PRSConfig(),
+    config: PRSConfig = PRSConfig()
 ) -> typing.Optional[str]:
     """
     Calculates a Polygenic Risk Score (PRS) and exports it to a file.
@@ -657,17 +505,16 @@ def calculate_prs(
 
         if config.samples_to_keep is not None:
             with _log_timing(
-                "Filtering to specified samples", config.detailed_timings
+                "Planning: Filtering to specified samples",
+                config.detailed_timings
             ):
                 samples_ht = _prepare_samples_to_keep(config.samples_to_keep)
                 vds = hl.vds.filter_samples(vds, samples_ht)
 
         full_weights_table, n_chunks = _prepare_weights_for_chunking(
             weights_table=weights_table,
-            weight_col_name=config.weight_col_name,
-            log_transform_weight=config.log_transform_weight,
-            chunk_size=config.chunk_size,
-            detailed_timings=config.detailed_timings
+            config=config,
+            validate_table=True,
         )
 
         partial_dfs = _process_chunks(
@@ -680,8 +527,7 @@ def calculate_prs(
         _aggregate_and_export(
             partial_dfs=partial_dfs,
             output_path=output_path,
-            sample_id_col=config.sample_id_col,
-            detailed_timings=config.detailed_timings
+            config=config,
         )
 
     # Report the total time using the duration captured by the context manager
