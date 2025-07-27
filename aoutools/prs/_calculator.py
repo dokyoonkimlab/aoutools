@@ -1,6 +1,6 @@
 """"PRS calculator"""
 
-import typing
+from typing import Optional
 import logging
 import hail as hl
 import hailtop.fs as hfs
@@ -20,101 +20,39 @@ from ._config import PRSConfig
 logger = logging.getLogger(__name__)
 
 
-# def _validate_and_prepare_weights_table(
-#     table: hl.Table,
-#     config: PRSConfig,
-# ) -> hl.Table:
-#     """
-#     Validates and prepares a single weights table for PRS calculation.
-
-#     This function ensures the table has the required columns with the correct
-#     types, standardizes the chromosome format, handles the weight column,
-#     and keys the table by locus for joining with the VDS.
-
-#     Parameters
-#     ----------
-#     table : hail.Table
-#         The input weights table. Must contain 'chr', 'pos', 'effect_allele',
-#         'noneffect_allele', and a weight column.
-#     weight_col_name : str
-#         The name of the column containing the effect weights.
-#     log_transform_weight : bool
-#         If True, applies a natural log transformation to the weight column.
-
-#     Returns
-#     -------
-#     hail.Table
-#         A validated, standardized, and keyed Hail Table.
-
-#     Raises
-#     ------
-#     TypeError
-#         If the specified `weight_col_name` does not exist, if other required
-#         columns are missing, or if any required column has an incorrect
-#         data type.
-#     """
-#     if config.weight_col_name not in table.row:
-#         raise TypeError(
-#             f"Specified weight column '{config.weight_col_name}' not found in table."
-#         )
-#     table = table.rename({config.weight_col_name: 'weight'})
-
-#     required_cols = {
-#         'chr': hl.tstr,
-#         'pos': hl.tint32,
-#         'effect_allele': hl.tstr,
-#         'noneffect_allele': hl.tstr,
-#         'weight': hl.tfloat64,
-#     }
-#     for col, expected_type in required_cols.items():
-#         if col not in table.row:
-#             raise TypeError(f"Weights table is missing required column: '{col}'.")
-#         if table[col].dtype != expected_type:
-#             raise TypeError(f"Column '{col}' has incorrect type.")
-
-#     table = _standardize_chromosome_column(table)
-#     if config.log_transform_weight:
-#         table = table.annotate(weight=hl.log(table.weight))
-
-#     table = table.annotate(
-#         locus=hl.locus(table.chr, table.pos, reference_genome='GRCh38')
-#     )
-#     table = table.key_by('locus')
-#     return table.select('effect_allele', 'noneffect_allele', 'weight')
-
-
-
 def _prepare_mt_split(
     vds: hl.vds.VariantDataset,
     weights_table: hl.Table,
-    # ref_is_effect_allele: bool,
-    # detailed_timings: bool,
     config: PRSConfig
 ) -> hl.MatrixTable:
     """
     Prepares a MatrixTable for the split-multi PRS calculation path.
 
-    This function takes an interval-filtered VDS, splits multi-allelic sites,
-    and joins it with the weights table using a precise `(locus, alleles)`
-    key. It handles allele orientation and weight direction based on the
-    `ref_is_effect_allele` flag and calculates the bi-allelic dosage.
+
+    Prepares a MatrixTable for split-multi PRS calculation.
+
+    Splits multi-allelic sites in the VDS, orients weights based on
+    `ref_is_effect_allele`, joins with the weights table using (locus, alleles),
+    and calculates dosage using GT after splitting.
 
     Parameters
     ----------
     vds : hail.vds.VariantDataset
-        The interval-filtered Variant Dataset.
+        An interval-filtered VariantDataset.
     weights_table : hail.Table
-        The chunk of the weights table.
-    ref_is_effect_allele : bool
-        If True, assumes the effect allele is the reference.
-    detailed_timings : bool
-        If True, logs the duration of computational steps.
+        A chunk of the PRS weights table.
+    config : PRSConfig
+        A configuration object controlling PRS behavior, including
+        `split_multi`, `ref_is_effect_allele`, and `detailed_timings`.
 
     Returns
     -------
     hail.MatrixTable
-        A prepared MatrixTable, filtered and annotated with `weights_info`
-        and `dosage` for the specified effect allele.
+        A MatrixTable annotated with `weights_info` and per-variant `dosage`.
+
+    See also
+    --------
+    PRSConfig : A configuration class that holds parameters for PRS calculation.
     """
     with _log_timing(
         "Planning: Splitting multi-allelic variants and joining",
@@ -122,23 +60,11 @@ def _prepare_mt_split(
     ):
         mt = hl.vds.split_multi(vds).variant_data
 
-        # weights_ht_processed = weights_table.annotate(
-        #     alleles=hl.if_else(
-        #         ref_is_effect_allele,
-        #         [weights_table.effect_allele, weights_table.noneffect_allele],
-        #         [weights_table.noneffect_allele, weights_table.effect_allele],
-        #     ),
-        #     weight=hl.if_else(
-        #         ref_is_effect_allele,
-        #         -weights_table.weight,
-        #         weights_table.weight,
-        #     ),
-        # ).key_by('locus', 'alleles')
         weights_ht_processed = _orient_weights_for_split(weights_table, config)
-
         mt = mt.annotate_rows(
             weights_info=weights_ht_processed[mt.row_key]
         )
+
         mt = mt.filter_rows(hl.is_defined(mt.weights_info))
 
     with _log_timing(
@@ -156,8 +82,6 @@ def _prepare_mt_split(
 def _prepare_mt_non_split(
     vds: hl.vds.VariantDataset,
     weights_table: hl.Table,
-    # strict_allele_match: bool,
-    # detailed_timings: bool,
     config: PRSConfig
 ) -> hl.MatrixTable:
     """
@@ -166,24 +90,27 @@ def _prepare_mt_non_split(
     This function takes an interval-filtered VDS and joins it with the
     weights table using a locus-based key. It optionally performs a strict
     allele match to handle allele orientation and then calculates dosage
-    using the custom multi-allelic dosage function.
+    using a custom multi-allelic dosage function.
 
     Parameters
     ----------
     vds : hail.vds.VariantDataset
-        The interval-filtered Variant Dataset.
+        An interval-filtered Variant Dataset.
     weights_table : hail.Table
-        The chunk of the weights table.
-    strict_allele_match : bool
-        If True, performs a robust check for allele correspondence.
-    detailed_timings : bool
-        If True, logs the duration of computational steps.
+        A chunk of the weights table.
+    config : PRSConfig
+        A configuration object controlling `strict_allele_match` and
+        `detailed_timings`.
 
     Returns
     -------
     hail.MatrixTable
-        A prepared MatrixTable, filtered and annotated with `weights_info`
-        and `dosage` for the specified effect allele.
+        A MatrixTable, filtered and annotated with `weights_info` and `dosage`
+        for the specified effect allele.
+
+    See also
+    --------
+    PRSConfig : A configuration class that holds parameters for PRS calculation.
     """
     mt = vds.variant_data
 
@@ -198,18 +125,7 @@ def _prepare_mt_non_split(
                 "Planning: Performing strict allele match",
                 config.detailed_timings
         ):
-            # alt_alleles = hl.set(mt.alleles[1:])
-            # ref_allele = mt.alleles[0]
-            # effect = mt.weights_info.effect_allele
-            # noneffect = mt.weights_info.noneffect_allele
-
-            # is_valid_pair = (
-            #     (effect == ref_allele) & alt_alleles.contains(noneffect)
-            # ) | (
-            #     (noneffect == ref_allele) & alt_alleles.contains(effect)
-            # )
             is_valid_pair = _check_allele_match(mt, mt.weights_info)
-
             mt = mt.filter_rows(is_valid_pair)
 
     with _log_timing(
@@ -229,45 +145,30 @@ def _calculate_prs_chunk(
     """
     Calculates a Polygenic Risk Score (PRS) for a single chunk of variants.
 
-    This function serves as the core computational engine. It first filters the
-    VDS to a small genomic region based on the input `weights_table` chunk. It
-    then dispatches to the appropriate helper function to prepare a MatrixTable
-    based on the `split_multi` setting, and finally aggregates the scores.
-
+    This function serves as the core computation step. It prepares the variant
+    data depending on whether multi-allelic splitting is enabled, and computes
+    the PRS using dosage-weight aggregation.
 
     Parameters
     ----------
     weights_table : hail.Table
-        A pre-filtered chunk of the main weights table, keyed by 'locus'.
+        A pre-filtered chunk of the full weights table, keyed by 'locus'.
     vds : hail.vds.VariantDataset
-        The Variant Dataset containing the genetic data.
+        The Variant Dataset containing genotypes to score.
     config : PRSConfig
-        A configuration object containing all settings for the calculation,
-        such as `split_multi` and `include_n_matched`.
+        A configuration object specifying settings such as `split_multi`,
+        `include_n_matched`, and `sample_id_col`.
 
     Returns
     -------
     hail.Table
-        A Hail Table containing the partial PRS results for the chunk, with
-        columns for the sample ID, 'prs' score, and optionally 'n_matched'.
-    """
-    # with _log_timing(
-    #     "Planning: Filtering VDS to variants in weights table chunk",
-    #     config.detailed_timings,
-    # ):
-    #     intervals_to_filter = (
-    #         weights_table.select(
-    #             interval=hl.interval(
-    #                 weights_table.locus,
-    #                 weights_table.locus,
-    #                 includes_end=True,
-    #             )
-    #         )
-    #         .key_by('interval')
-    #         .distinct()
-    #     )
-    #     vds = hl.vds.filter_intervals(vds, intervals_to_filter, keep=True)
+        A Hail Table with one row per sample and a PRS column. If requested,
+        also includes the number of matched variants ('n_matched').
 
+    See also
+    --------
+    PRSConfig : A configuration class that holds parameters for PRS calculation.
+    """
     if config.split_multi:
         mt = _prepare_mt_split(
             vds=vds,
@@ -299,9 +200,10 @@ def _calculate_prs_chunk(
             logger.info("%d variants in common in this chunk.", n_matched)
             prs_table = prs_table.annotate(n_matched=n_matched)
 
+    # Rename sample ID column to user-defined name
     prs_table = prs_table.rename({'s': config.sample_id_col})
-    # Dropping all global annotations by passing no arguments to select_globals().
-    # This is intentional to reduce memory usage.
+
+    # Drop all global annotations to minimize memory footprint
     return prs_table.select_globals()
 
 
@@ -314,27 +216,33 @@ def _process_chunks(
     """
     Iteratively processes each chunk of the weights table.
 
-    This helper function orchestrates the main processing loop. It iterates
-    through the weights table chunk by chunk, calling the core
-    `_calculate_prs_chunk` engine for each one, and converts the partial
-    results into Pandas DataFrames for final aggregation.
+    This helper function orchestrates the main PRS calculation loop. For each
+    chunk, it filters the Variant Dataset to the relevant genomic intervals,
+    computes the PRS using `_calculate_prs_chunk`, and converts the result to a
+    Pandas DataFrame.
 
     Parameters
     ----------
     full_weights_table : hail.Table
-        The prepared and chunk-annotated weights table.
+        The full weights table, annotated with a 'chunk_id' field.
     n_chunks : int
         The total number of chunks to process.
     vds : hail.vds.VariantDataset
-        The Variant Dataset, potentially pre-filtered for samples.
+        The Variant Dataset containing genotype data, optionally
+        filtered for samples.
     config : PRSConfig
-        The configuration object containing all calculation settings.
+        A configuration object specifying PRS settings, including
+        `detailed_timings` and `sample_id_col`.
 
     Returns
     -------
     list[pd.DataFrame]
-        A list of Pandas DataFrames, where each DataFrame contains the partial
-        PRS results for one chunk.
+        A list of Pandas DataFrames, where each DataFrame contains
+        the partial PRS results for one chunk.
+
+    See also
+    --------
+    PRSConfig : A configuration class that holds parameters for PRS calculation.
     """
     partial_dfs = []
     for i in range(n_chunks):
@@ -362,40 +270,43 @@ def _process_chunks(
                 config=config
             )
 
+            # Convert the per-chunk Hail Table to a Pandas DataFrame.
             partial_dfs.append(chunk_prs_table.to_pandas())
+
     return partial_dfs
 
 
 def _aggregate_and_export(
     partial_dfs: list[pd.DataFrame],
     output_path: str,
-    # sample_id_col: str,
-    # detailed_timings: bool,
     config: PRSConfig
 ) -> None:
     """
-    Aggregates partial Pandas DataFrame results and exports to a final file.
+    Aggregates partial Pandas DataFrame results and exports the final result.
 
-    This helper function handles the final aggregation and export stage. It
-    takes a list of Pandas DataFrames, each containing partial results from a
-    single chunk, concatenates them, and then calculates the final total PRS
-    for each sample by grouping and summing the results. The final aggregated
-    data is then written to a specified cloud storage path.
+    This helper function handles the final aggregation and export stage of the
+    PRS pipeline. It concatenates a list of partial DataFrames, groups them by
+    sample ID, sums the PRS scores, and writes the final aggregated results to
+    a specified cloud storage path.
 
     Parameters
     ----------
     partial_dfs : list[pd.DataFrame]
-        A list of Pandas DataFrames, each containing partial PRS results.
+        A list of Pandas DataFrames, where each contains partial PRS results
+        for a chunk.
     output_path : str
-        The GCS path to write the final tab-separated file.
-    sample_id_col : str
-        The name of the column containing sample IDs to group by.
-    detailed_timings : bool
-        If True, logs the duration of the aggregation and export steps.
+        A destination path on GCS to write the final tab-separated file.
+    config : PRSConfig
+        A configuration object that specifies `sample_id_col` and
+        `detailed_timings`.
 
     Returns
     -------
     None
+
+    See also
+    --------
+    PRSConfig : A configuration class that holds parameters for PRS calculation.
     """
     if not partial_dfs:
         logger.warning(
@@ -421,15 +332,15 @@ def calculate_prs(
     vds: hl.vds.VariantDataset,
     output_path: str,
     config: PRSConfig = PRSConfig()
-) -> typing.Optional[str]:
+) -> Optional[str]:
     """
-    Calculates a Polygenic Risk Score (PRS) and exports it to a file.
+    Calculates a Polygenic Risk Score (PRS) and exports the result to a file.
 
     This function is the main entry point for the PRS calculation workflow. It
     processes a weights table in chunks, using a filter_intervals approach to
-    select variants from the VDS for each chunk. The partial results are then
-    converted to Pandas DataFrames and aggregated in memory to produce the
-    final score file.
+    select variants from the VDS for each chunk. Partial results are then
+    converted to Pandas DataFrames and aggregated to produce the final score
+    file.
 
     Notes
     -----
@@ -462,7 +373,7 @@ def calculate_prs(
         - A column for the effect weight (float64), specified by
           `weight_col_name`.
     vds : hail.vds.VariantDataset
-        The Variant Dataset containing the genetic data.
+        A Hail VariantDataset containing both variant and sample data.
     output_path : str
         A GCS path (starting with 'gs://') to write the final tab-separated
         output file.
@@ -474,11 +385,10 @@ def calculate_prs(
     Returns
     -------
     str or None
-        The path to the final output file. Returns None if no results are
-        generated. The output file is a tab-separated text file with the
-        following columns:
-        - A sample identifier column (named according to `sample_id_col`).
-        - 'prs': The calculated Polygenic Risk Score.
+        The output path if results are successfully written; otherwise, None.
+        The output file is a tab-separated text file with:
+        - A sample ID column (as configured in `config.sample_id_col`)
+        - 'prs': The calculated PRS value
         - 'n_matched' (optional): The number of variants used to calculate
           the score, included if `config.include_n_matched` is True.
 
@@ -489,6 +399,10 @@ def calculate_prs(
         is empty after validation.
     TypeError
         If the `config.samples_to_keep` argument is of an unsupported type.
+
+    See also
+    --------
+    PRSConfig : A configuration class that holds parameters for PRS calculation.
     """
     timer = SimpleTimer()
     with timer:

@@ -1,6 +1,6 @@
 """Reader for PRS weights files"""
 
-import typing
+from typing import Optional, Union
 import logging
 import hail as hl
 import hailtop.fs as hfs
@@ -13,7 +13,9 @@ from ._utils import (
 logger = logging.getLogger(__name__)
 
 
-def _validate_alleles(table: hl.Table) -> hl.Table:
+def _validate_alleles(
+    table: hl.Table
+) -> hl.Table:
     """
     Filters out rows with invalid alleles (non-ACGT characters).
 
@@ -23,12 +25,13 @@ def _validate_alleles(table: hl.Table) -> hl.Table:
     Parameters
     ----------
     table : hail.Table
-        The table to validate.
+        A Hail Table containing `effect_allele` and `noneffect_allele` fields
+        to validate.
 
     Returns
     -------
     hail.Table
-        A table with invalid allele rows removed.
+        A filtered table with only rows that contain valid alleles.
     """
     logger.info("Validating allele columns for non-ACGT characters...")
 
@@ -51,27 +54,33 @@ def _validate_alleles(table: hl.Table) -> hl.Table:
     return table
 
 
-def _check_duplicated_ids(table: hl.Table, file_path: str = "input") -> None:
+def _check_duplicated_ids(
+    table: hl.Table,
+    file_path: str = "input"
+) -> None:
     """
     Checks for duplicate variants based on genomic identifiers.
 
-    This function creates a temporary variant ID by concatenating the chromosome,
-    position, and alleles. It then groups by this ID to identify and
-    raise an error if any duplicates are found.
+    This function constructs a unique variant ID by concatenating the
+    chromosome, position, and alleles. It then checks for duplicates and
+    raises an error if any are found.
 
     Parameters
     ----------
-    table : hail.Table
-        The input table to check. It must contain the fields 'chr', 'pos',
+    table : hl.Table
+        A Hail Table to validate. Must contain the fields 'chr', 'pos',
         'noneffect_allele', and 'effect_allele'.
     file_path : str, optional
-        The source file path, used for a more informative error message.
-        Defaults to "input".
+        A source file path to display in error messages. Default is "input".
+
+    Returns
+    -------
+    None
 
     Raises
     ------
     ValueError
-        If duplicate variants are found in the table.
+        If any duplicate variants are found based on the constructed ID.
     """
     logger.info(
         "Checking for duplicate variants based on chr, pos, and alleles..."
@@ -100,7 +109,9 @@ def _check_duplicated_ids(table: hl.Table, file_path: str = "input") -> None:
 
 
 def _process_prs_weights_table(
-    table: hl.Table, file_path: str, validate_alleles: bool
+    table: hl.Table,
+    file_path: str,
+    validate_alleles: bool
 ) -> hl.Table:
     """
     Performs final filtering and validation steps on an imported weights table.
@@ -116,16 +127,16 @@ def _process_prs_weights_table(
     Parameters
     ----------
     table : hail.Table
-        The table immediately after import and column standardization.
+        A Hail table immediately after import and column standardization.
     file_path : str
-        The source file path, for use in logging and error messages.
+        A source file path used for logging and error messages.
     validate_alleles : bool
         If True, validates that allele columns contain only ACGT characters.
 
     Returns
     -------
     hail.Table
-        The fully processed and validated Hail Table.
+        A fully processed and validated Hail Table.
 
     Raises
     ------
@@ -158,11 +169,13 @@ def _process_prs_weights_table(
 
 
 def _read_prs_weights_noheader(
+    #pylint: disable=too-many-arguments
+    #pylint: disable=too-many-positional-arguments
     file_path: str,
     column_map: dict,
     delimiter: str = '\t',
     keep_other_cols: bool = False,
-    min_partitions: typing.Optional[int] = None,
+    min_partitions: Optional[int] = None,
     validate_alleles: bool = False
 ) -> hl.Table:
     """
@@ -175,22 +188,22 @@ def _read_prs_weights_noheader(
     Parameters
     ----------
     file_path : str
-        Path to the weight file.
+        A path to the weight file.
     column_map : dict
-        Dictionary mapping standard names to 1-based integer indices.
+        A dictionary mapping standard names to 1-based integer indices.
     delimiter : str
-        Field delimiter.
+        A field delimiter.
     keep_other_cols : bool
         If True, all non-required columns are preserved.
     min_partitions : int, optional
-        Hint for minimum number of partitions for the Hail Table.
+        The minimum number of partitions for the Hail Table.
     validate_alleles : bool
         If True, validates that allele columns contain only ACGT characters.
 
     Returns
     -------
     hail.Table
-        The processed Hail Table.
+        A processed Hail Table.
 
     Raises
     ------
@@ -242,11 +255,13 @@ def _read_prs_weights_noheader(
 
 
 def _read_prs_weights_header(
+    #pylint: disable=too-many-arguments
+    #pylint: disable=too-many-positional-arguments
     file_path: str,
     column_map: dict,
     delimiter: str = '\t',
     keep_other_cols: bool = False,
-    min_partitions: typing.Optional[int] = None,
+    min_partitions: Optional[int] = None,
     validate_alleles: bool = False
 ) -> hl.Table:
     """
@@ -259,22 +274,22 @@ def _read_prs_weights_header(
     Parameters
     ----------
     file_path : str
-        Path to the weight file.
+        A path to the weight file.
     column_map : dict
-        Dictionary mapping standard names to user-defined column names.
+        A dictionary mapping standard names to user-defined column names.
     delimiter : str
-        Field delimiter.
+        A field delimiter.
     keep_other_cols : bool
         If True, all non-required columns are preserved.
     min_partitions : int, optional
-        Hint for minimum number of partitions for the Hail Table.
+        The minimum number of partitions for the Hail Table.
     validate_alleles : bool
         If True, validates that allele columns contain only ACGT characters.
 
     Returns
     -------
     hail.Table
-        The processed Hail Table.
+        A processed Hail Table.
 
     Raises
     ------
@@ -332,7 +347,7 @@ def _validate_column_map_type(column_map: dict, header: bool):
     Parameters
     ----------
     column_map : dict
-        Dictionary mapping standard keys to column names or indices.
+        A dictionary mapping standard keys to column names or indices.
     header : bool
         Indicates if the input file has a header row.
         - If True, all values in `column_map` must be strings (column names).
@@ -353,30 +368,32 @@ def _validate_column_map_type(column_map: dict, header: bool):
 
 
 def read_prs_weights(
+    #pylint: disable=too-many-arguments
+    #pylint: disable=too-many-positional-arguments
     file_path: str,
     header: bool,
-    column_map: dict[str, typing.Union[str, int]],
+    column_map: dict[str, Union[str, int]],
     delimiter: str = '\t',
     keep_other_cols: bool = False,
-    min_partitions: typing.Optional[int] = None,
+    min_partitions: Optional[int] = None,
     validate_alleles: bool = False
 ) -> hl.Table:
     """
     Reads a file containing variant effect weights for PRS calculation.
 
-    This function requires a Hail-enabled environment to be active. It uses a
+    This function requires an active Hail-enabled environment. It uses a
     flexible `column_map` dictionary to handle various input file formats.
     After standardizing the required columns, the function performs several
     validation checks, filtering out variants with missing weights, invalid
     alleles (if `validate_alleles=True`), or raising an error for duplicates.
 
     If a local file path is provided, it is automatically copied to a temporary
-    directory in your GCS bucket for Hail to access.
+    directory in your GCS bucket for Hail access.
 
     Parameters
     ----------
     file_path : str
-        Path to the weight file (local or gs://).
+        A path to the weight file (local or gs://).
     header : bool
         If True, `column_map` values should be strings (column names).
         If False, `column_map` values should be 1-based integers (column indices).
@@ -387,18 +404,18 @@ def read_prs_weights(
         Example for header=True: {'chr': 'CHR', 'pos': 'BP', ...}
         Example for header=False: {'chr': 1, 'pos': 2, ...}
     delimiter : str, default '\t'
-        Field delimiter.
+        A field delimiter.
     keep_other_cols : bool, default False
         If True, all columns not specified in `column_map` are preserved.
     min_partitions : int, optional
-        A Hail-specific parameter to hint at the minimum number of partitions.
+        The minimum number of partitions for the Hail Table.
     validate_alleles : bool, default False
         If True, validates that allele columns contain only ACGT characters.
 
     Returns
     -------
     hail.Table
-        A Hail Table with standardized columns.
+        A Hail Table with standardized columns ready for PRS calculation.
 
     Raises
     ------
@@ -451,7 +468,10 @@ def read_prs_weights(
     return result_table
 
 
-def read_prscs(file_path: str, **kwargs) -> hl.Table:
+def read_prscs(
+    file_path: str,
+    **kwargs
+) -> hl.Table:
     """
     A simple wrapper to read PRS-CS output files.
 
@@ -471,7 +491,7 @@ def read_prscs(file_path: str, **kwargs) -> hl.Table:
     Parameters
     ----------
     file_path : str
-        Path to the PRS-CS output file.
+        A path to the PRS-CS output file.
     **kwargs
         Other optional arguments to pass to `read_prs_weights`, such as
         `keep_other_cols` or `validate_alleles`.

@@ -14,14 +14,14 @@ logger = logging.getLogger(__name__)
 @contextmanager
 def _log_timing(description: str, enabled: bool = True):
     """
-    A context manager to log the duration of a code block.
+    Context manager to log the duration of a code block.
 
     Parameters
     ----------
     description : str
         A description of the code block being timed.
-    enabled : bool
-        If False, the timer is disabled.
+    enabled : bool, default=True
+        If False, disables timing and logging.
     """
     if not enabled:
         yield
@@ -34,36 +34,38 @@ def _log_timing(description: str, enabled: bool = True):
     logger.info("%s finished in %.2f seconds.", description, duration)
 
 
-def _stage_local_file_to_gcs(file_path: str, sub_dir: str) -> str:
+def _stage_local_file_to_gcs(
+    file_path: str,
+    sub_dir: str
+) -> str:
     """
-    Checks if a file path is local and, if so, stages it to GCS.
+    Checks if file path is local; if so, stages it to GCS.
 
-    For distributed platforms like the All of Us Researcher Workbench, Hail's
-    Spark cluster cannot directly access the local notebook environment. This
-    function ensures that local files are copied to a subdirectory within
-    the workspace's GCS bucket, which is accessible by the cluster.
+    Useful for distributed platforms like All of Us Researcher Workbench, where
+    Hail's Spark cluster cannot access local notebook environment directly. This
+    function copies local files to a subdirectory within workspace's GCS bucket,
+    which is accessible by the cluster.
 
-    It uses the WORKSPACE_BUCKET environment variable provided by the platform.
+    Uses WORKSPACE_BUCKET environment variable provided by the platform.
 
     Parameters
     ----------
     file_path : str
-        The path to the file.
+        A path to the file.
     sub_dir : str
-        The subdirectory within `$WORKSPACE_BUCKET/data/` to copy the file to.
+        A subdirectory within `$WORKSPACE_BUCKET/data/` to copy the file to.
 
     Returns
     -------
     str
-        A GCS path to the file that Hail can access.
+        A GCS path to the file accessible by Hail.
 
     Raises
     ------
     FileNotFoundError
-        If a local `file_path` is provided and the file does not exist.
+        If a local `file_path` does not exist.
     EnvironmentError
-        If a local file is provided and the `WORKSPACE_BUCKET` environment
-        variable is not set.
+        If the `WORKSPACE_BUCKET` environment variable is not set.
     """
     if file_path.startswith('gs://'):
         return file_path
@@ -71,12 +73,12 @@ def _stage_local_file_to_gcs(file_path: str, sub_dir: str) -> str:
         raise FileNotFoundError(f"Local file does not exist: {file_path}")
 
     workspace_bucket = os.getenv('WORKSPACE_BUCKET')
-    # Fail fast if the required environment variable is not set.
     if not workspace_bucket:
         raise EnvironmentError(
             "The 'WORKSPACE_BUCKET' environment variable is not set. "
             "This is required to stage local files to GCS."
         )
+
     gcs_path = os.path.join(
         workspace_bucket, 'data', sub_dir, os.path.basename(file_path)
     )
@@ -96,22 +98,22 @@ def _stage_local_file_to_gcs(file_path: str, sub_dir: str) -> str:
 
 def _standardize_chromosome_column(table: hl.Table) -> hl.Table:
     """
-    Ensures the 'chr' column has a 'chr' prefix.
+    Ensures that the 'chr' column has a 'chr' prefix.
 
-    This function inspects a sample of the 'chr' column. If the 'chr' prefix
-    is missing (e.g., '1' instead of 'chr1'), it annotates the entire
-    column to add the prefix. This is crucial for matching against reference
-    datasets like the All of Us VDS.
+    Inspects a sample value from the 'chr' column. If the prefix is missing
+    (e.g., '1' instead of 'chr1'), annotates the entire column to add it.
+    This standardization is crucial for matching against reference datasets
+    like the All of Us VDS.
 
     Parameters
     ----------
     table : hail.Table
-        The table to process, must contain a 'chr' column.
+        A Hail Table to process; must contain a 'chr' column.
 
     Returns
     -------
     hail.Table
-        A table with a standardized 'chr' column.
+        A Hail Table with a standardized 'chr' column.
     """
     if table.count() == 0:
         return table

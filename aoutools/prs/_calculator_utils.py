@@ -14,25 +14,26 @@ logger = logging.getLogger(__name__)
 
 
 def _prepare_samples_to_keep(
-    samples: typing.Union[hl.Table, list, set, tuple, int, str]
+    samples: typing.Union[hl.Table, list, set, tuple, int, float, str]
 ) -> hl.Table:
     """
     Converts a flexible list of samples into a keyed Hail Table.
 
-    This helper function provides flexibility by accepting various common
-    Python collection types (list, set, tuple) or single values (int, str)
-    and converting them into a standardized Hail Table with a string key 's',
-    which is required for filtering Hail objects.
+    Accepts various common Python collection types (list, set, tuple) or single
+    values (int, float, str) and converts them into a standardized Hail Table
+    keyed by the string column 's'. This table can then be used to filter
+    Hail datasets by sample ID.
 
     Parameters
     ----------
-    samples : hail.Table, list, set, tuple, int, or str
-        The collection of sample IDs to prepare.
+    samples : hail.Table, list, set, tuple, int, float, or str
+        A collection or single value of sample IDs to prepare. Numeric types
+        will be converted to strings for consistent keying.
 
     Returns
     -------
     hail.Table
-        A Hail Table keyed by 's' containing the sample IDs as strings.
+        A Hail Table keyed by 's' containing sample IDs as strings.
 
     Raises
     ------
@@ -42,13 +43,14 @@ def _prepare_samples_to_keep(
     if isinstance(samples, hl.Table):
         return samples
 
-    sample_list = []
     if isinstance(samples, (int, float, str)):
         sample_list = [str(samples)]
     elif isinstance(samples, (list, set, tuple)):
         sample_list = [str(s) for s in samples]
     else:
-        raise TypeError(f"Unsupported type for samples_to_keep: {type(samples)}.")
+        raise TypeError(
+            f"Unsupported type for samples_to_keep: {type(samples)}."
+        )
 
     samples_ht = hl.Table.parallelize(
         [{'s': s} for s in sample_list], hl.tstruct(s=hl.tstr)
@@ -63,18 +65,18 @@ def _validate_and_prepare_weights_table(
     """
     Validates and prepares a single weights table for PRS calculation.
 
-    This function ensures the table has the required columns with the correct
-    types, standardizes the chromosome format, handles the weight column,
-    and keys the table by locus for joining with the VDS.
+    Ensures the table has the required columns with correct types, standardizes
+    the chromosome format, handles the weight column (renaming and optional
+    log transformation), and keys the table by locus for joining with the VDS.
 
     Parameters
     ----------
     weights_table : hail.Table
-        The input weights table. Must contain 'chr', 'pos', 'effect_allele',
-        'noneffect_allele', and a weight column.
+        An input weights table. Must contain columns 'chr', 'pos',
+        'effect_allele', 'noneffect_allele', and a weight column.
     config : PRSConfig
-        A configuration object containing settings like `weight_col_name` and
-        `log_transform_weight`.
+        A configuration object specifying parameters such as `weight_col_name`
+        and `log_transform_weight`.
 
     Returns
     -------
@@ -84,9 +86,12 @@ def _validate_and_prepare_weights_table(
     Raises
     ------
     TypeError
-        If the specified `weight_col_name` does not exist, if other required
-        columns are missing, or if any required column has an incorrect
-        data type.
+        If `weight_col_name` is missing, or any required column is missing, or
+        has incorrect data type.
+
+    See also
+    --------
+    PRSConfig : A configuration class that holds parameters for PRS calculation.
     """
     if config.weight_col_name not in weights_table.row:
         raise TypeError(
@@ -104,7 +109,9 @@ def _validate_and_prepare_weights_table(
     }
     for col, expected_type in required_cols.items():
         if col not in weights_table.row:
-            raise TypeError(f"Weights table is missing required column: '{col}'.")
+            raise TypeError(
+                f"Weights table is missing required column: '{col}'."
+            )
         if weights_table[col].dtype != expected_type:
             raise TypeError(f"Column '{col}' has incorrect type.")
 
@@ -131,10 +138,31 @@ def _orient_weights_for_split(
     config: PRSConfig
 ) -> hl.Table:
     """
-    Orients alleles and weight for a split-multi join.
+    Orients alleles and weights for a split-multi join.
 
-    Creates a canonical [ref, alt] representation for the join key and
-    adjusts the weight to always correspond to the alternate allele.
+    Constructs a canonical `[ref, alt]` allele representation for the join key
+    and adjusts the weights so that they always correspond to the alternate
+    allele. This is important to ensure consistency in allele orientation for
+    PRS calculation.
+
+    Parameters
+    ----------
+    ht : hail.Table
+        A Hail table containing 'effect_allele', 'noneffect_allele', 'weight',
+        and 'locus' fields.
+    config : PRSConfig
+        A configuration object specifying if reference allele is effect allele
+        (`ref_is_effect_allele`).
+
+    Returns
+    -------
+    hail.Table
+        A table keyed by 'locus' and 'alleles', with adjusted 'weight' to align
+        with the alternate allele.
+
+    See also
+    --------
+    PRSConfig : A configuration class that specifies allele orientation settings.
     """
     return ht.annotate(
         alleles=hl.if_else(
@@ -149,14 +177,32 @@ def _orient_weights_for_split(
         )
     ).key_by('locus', 'alleles')
 
+
 def _check_allele_match(
     mt: hl.MatrixTable,
     weights_info: hl.expr.StructExpression
 ) -> hl.expr.BooleanExpression:
     """
-    Returns a boolean expression for a strict allele match.
-    This checks if one allele from the weights table is the ref allele in the
-    VDS and the other is a valid alt allele.
+    Returns a boolean expression indicating a strict allele match.
+
+    Checks whether one allele from the weights table matches the reference
+    allele in the VDS and the other allele is a valid alternate allele at that
+    locus.
+
+    Parameters
+    ----------
+    mt : hail.MatrixTable
+        A MatrixTable containing an 'alleles' field with the reference allele at
+        index 0 and alternate alleles at indices 1 and above.
+    weights_info : hail.expr.StructExpression
+        A struct expression containing 'effect_allele' and 'noneffect_allele'
+        fields from the weights table for the variant.
+
+    Returns
+    -------
+    hail.expr.BooleanExpression
+        A boolean expression evaluating to True if alleles match strictly,
+        False otherwise.
     """
     alt_alleles = hl.set(mt.alleles[1:])
     ref_allele = mt.alleles[0]
@@ -170,25 +216,25 @@ def _check_allele_match(
 
     return is_valid_pair
 
+
 def _calculate_dosage(
     mt: hl.MatrixTable,
     score_name: str = ''
 ) -> hl.expr.Int32Expression:
     """
-    Calculates the dosage of the effect allele for a specific score.
+    Calculates dosage of effect allele.
 
-    This expression handles both global (GT) and local (LGT/LA) genotype
-    encoding formats, which enables sparse storage of homozygous reference
-    calls. It correctly computes dosage at multi-allelic sites.
+    Handles both global (GT) and local (LGT/LA) genotype encoding formats,
+    accounting for sparse storage of homozygous reference calls.
 
     Parameters
     ----------
     mt : hail.MatrixTable
-        MatrixTable annotated with a `weights_info` struct. For batch mode,
+        A MatrixTable annotated with a `weights_info` struct. For batch mode,
         the struct is named `weights_info_{score_name}`.
-    score_name : str, optional
-        The identifier for the PRS being calculated, used to access the
-        correct weights annotation in batch mode.
+    score_name : str, default=''
+        An identifier for the PRS being calculated, used to access the correct
+        weights annotation in batch mode.
 
     Returns
     -------
@@ -241,65 +287,54 @@ def _calculate_dosage(
 
 def _prepare_weights_for_chunking(
     weights_table: hl.Table,
-    # weight_col_name: str,
-    # log_transform_weight: bool,
-    # chunk_size: typing.Optional[int],
-    # detailed_timings: bool,
     config: PRSConfig,
     validate_table: bool = True
 ) -> tuple[hl.Table, int]:
     """
     Prepares and annotates a weights table for chunked processing.
 
-    This helper function takes the raw weights table, validates it, calculates
-    the number of chunks based on the `chunk_size`, and adds a `chunk_id`
-    column to each row. This prepares the table for iterative processing in
-    the main PRS calculation loop.
+    This helper function takes a raw weights table, optionally validates it,
+    and assigns each row a `chunk_id` based on the configured chunk size.
+    It enables iterative PRS calculation by partitioning the input into
+    manageable chunks.
 
     Parameters
     ----------
     weights_table : hail.Table
-        The raw input weights table from the user.
+        Raw input weights table from the user.
     weight_col_name : str
-        The name of the column containing effect weights.
-    log_transform_weight : bool
-        If True, log-transforms the weight column.
-    chunk_size : int, optional
-        The desired number of variants per chunk. If None, the entire table
-        will be processed as a single chunk.
-    detailed_timings : bool
-        If True, logs the duration of this preparation step.
-    validate_table: bool, default True
-        If True, the function calls `_validate_and_prepare_weights_table`. If
-        False, this validation step is skipped, assuming the table is already
-        prepared. This argument is intended for PRS batch calculations, where
-        the table validation has already been performed upstream.
+        Column name containing effect weights.
+    config : PRSConfig
+        Configuration object with `chunk_size`, `log_transform_weight`, and
+        `detailed_timings` settings.
+    validate_table : bool, default=True
+        If True, validates and preprocesses the weights table using
+        `_validate_and_prepare_weights_table`. If False, assumes the table is
+        already validated. This is useful for batch processing where validation
+        occurs upstream.
 
     Returns
     -------
     tuple[hail.Table, int]
-        A tuple containing:
-        - The fully validated and prepared weights table, now annotated with a
-          `chunk_id` for each row.
-        - An integer representing the total number of chunks.
+        Tuple containing:
+        - A validated and annotated weights table with a `chunk_id` column.
+        - The number of chunks the table was divided into.
 
     Raises
     ------
     ValueError
-        If the `weights_table` is empty after the initial validation and
-        filtering steps.
+        If the input table is empty after validation.
     """
     with _log_timing(
         "Preparing and analyzing weights table", config.detailed_timings
     ):
         if validate_table:
-            full_weights_table = _validate_and_prepare_weights_table(
+            weights_table = _validate_and_prepare_weights_table(
                 weights_table=weights_table,
                 config=config
             )
-        else:
-            full_weights_table = weights_table
-        total_variants = full_weights_table.count()
+
+        total_variants = weights_table.count()
         if total_variants == 0:
             raise ValueError("Weights table is empty after validation.")
 
@@ -313,23 +348,38 @@ def _prepare_weights_for_chunking(
 
         # Don't use chain (hl.Table.add_index().annotate()) as it is not find
         # the idx at the annotation step due to lazy eval.
-        full_weights_table = full_weights_table.add_index()
-        full_weights_table = full_weights_table.annotate(
+        weights_table = weights_table.add_index()
+        weights_table = weights_table.annotate(
             chunk_id=hl.int(
-                full_weights_table.idx / effective_chunk_size
+                weights_table.idx / effective_chunk_size
             )
         )
-        # Note:add_index does not reset the existing key (locus), so don't have
-        # to key_by('locus) again
+        # Note: add_index() preserves existing keys (e.g., locus),
+        # so no need to re-key explicitly
 
-        return full_weights_table, n_chunks
+        return weights_table, n_chunks
 
 
 def _create_1bp_intervals(
-        table_chunk: hl.Table
+    table_chunk: hl.Table
 ) -> hl.Table:
     """
-    Creates a table of 1-bp intervals from a table with a locus key.
+    Creates a table of 1-base-pair (1-bp) intervals from a Hail Table keyed by
+    locus.
+
+    Useful for interval-based joins or filtering operations, where each variant
+    is represented as a genomic interval spanning exactly one position
+    (i.e., [locus, locus], inclusive).
+
+    Parameters
+    ----------
+    table_chunk : hail.Table
+        A Hail Table containing a 'locus' field of type `locus<Locus>`.
+
+    Returns
+    -------
+    hail.Table
+        A new Table keyed by 1-bp interval around each locus.
     """
     return table_chunk.select(
         interval=hl.interval(

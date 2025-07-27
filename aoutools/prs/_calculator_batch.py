@@ -1,6 +1,6 @@
 """PRS batch calculator"""
 
-import typing
+from typing import Optional
 import logging
 import hail as hl
 import hailtop.fs as hfs
@@ -26,18 +26,33 @@ def _prepare_batch_weights_data(
     config: PRSConfig,
 ) -> tuple[dict, hl.Table]:
     """
-    Prepares all weights tables for batch processing.
+    Prepares multiple weights tables for batch PRS calculation.
 
-    This function validates each weights table, prepares a version formatted
-    for the specified calculation path (split or non-split), and returns the
-    union of all unique loci found across all tables.
+    This function validates and formats each weights table according to the
+    selected calculation mode (split or non-split). It also builds a union of
+    all unique loci across tables, which will later be used to filter the
+    Variant Dataset (VDS).
+
+    Parameters
+    ----------
+    weights_tables_map : dict[str, hl.Table]
+        A dictionary mapping score names to Hail tables containing PRS weights.
+    config : PRSConfig
+        A configuration object controlling behavior such as whether to split
+        multi-allelic variants.
 
     Returns
     -------
+
     tuple[dict, hl.Table]
         A tuple containing:
-        - A dictionary of prepared weights, formatted for the chosen path.
-        - A Hail Table with all unique loci to keep.
+        - A dictionary of prepared weights tables formatted for PRS calculation.
+        - A Hail table containing all unique loci to keep for filtering.
+          Returns `None` if no tables are provided.
+
+    See also
+    --------
+    PRSConfig : A configuration class that holds parameters for PRS calculation.
     """
     prepared_weights = {}
     all_loci_tables = []
@@ -64,18 +79,6 @@ def _prepare_batch_weights_data(
             config.detailed_timings
         ):
             for score_name, ht in prepared_weights.items():
-                # processed_ht = ht.annotate(
-                #     alleles=hl.if_else(
-                #         config.ref_is_effect_allele,
-                #         [ht.effect_allele, ht.noneffect_allele],
-                #         [ht.noneffect_allele, ht.effect_allele]
-                #     ),
-                #     weight=hl.if_else(
-                #         config.ref_is_effect_allele,
-                #         -ht.weight,
-                #         ht.weight
-                #     )
-                # ).key_by('locus', 'alleles')
                 final_prepared_weights[score_name] = \
                     _orient_weights_for_split(ht, config)
     else:
@@ -93,9 +96,42 @@ def _build_row_annotations(
     config: PRSConfig,
 ) -> dict[str, hl.expr.Expression]:
     """
-    Returns a dictionary of row annotations including:
-    - weights_info_{score}
-    - is_valid_{score}
+    Builds a dictionary of row annotations for PRS calculation.
+
+    Each annotation includes:
+    - `weights_info_{score}`: A struct containing the weights row matched to
+      the current MatrixTable row for the given score.
+    - `is_valid_{score}`: A boolean expression indicating whether a valid match
+      was found for that score.
+
+    In non-split mode, if `strict_allele_match` is enabled, the function also
+    verifies allele consistency between the MatrixTable and weights table.
+
+    Parameters
+    ----------
+    mt : hail.MatrixTable
+        A MatrixTable containing genotype data.
+    mt_key : hl.expr.StructExpression
+        A struct expression (e.g., `hl.struct(locus=..., alleles=...)`) used to
+        join against each weights table.
+    weights_tables_map : dict[str, hl.Table]
+        A dictionary mapping score names to the original weights tables.
+    prepared_weights : dict[str, hl.Table]
+        A dictionary of validated and possibly re-keyed weights tables,
+        prepared for lookup during annotation.
+    config : PRSConfig
+        A configuration object that controls behavior such as whether to split
+        multi-allelic variants and enforce strict allele matching.
+
+    Returns
+    -------
+    dict[str, hl.expr.Expression]
+        A dictionary mapping annotation names to Hail expressions, to be used as
+        row fields in the MatrixTable.
+
+    See also
+    --------
+    PRSConfig : A configuration class that holds parameters for PRS calculation.
     """
     annotations = {}
     for score_name in weights_tables_map:
@@ -116,7 +152,40 @@ def _build_prs_agg_expr(
     config: PRSConfig,
 ) -> hl.expr.Aggregation:
     """
-    Returns an aggregation expression for a given score name.
+    Builds an aggregation expression to compute a Polygenic Risk Score (PRS)
+    for a given score.
+
+    This expression calculates the sum of dosage multiplied by weight across
+    all valid variants. A variant is considered valid if it is matched in the
+    weights table and, if applicable, passes the allele-matching check.
+
+    The dosage computation differs based on whether multi-allelic variants have
+    been split. In split mode, `n_alt_alleles()` is used directly. In non-split
+    mode, dosage is computed using the custom logic defined in
+    `_calculate_dosage`.
+
+    Parameters
+    ----------
+    mt : hail.MatrixTable
+        A MatrixTable containing genotype data and row-level annotations
+        produced by `_build_row_annotations`, including `weights_info_{score}`
+        and `is_valid_{score}`.
+    score_name : str
+        A string identifier for the PRS score to compute. Used to look up the
+        relevant annotations.
+    config : PRSConfig
+        A configuration object that determines whether the input data is split
+        and how dosage is calculated.
+
+    Returns
+    -------
+    hl.expr.Aggregation
+        An aggregation expression representing the sum of `dosage * weight`
+        across all valid variants for the given score.
+
+    See also
+    --------
+    PRSConfig : A configuration class that holds parameters for PRS calculation.
     """
     weights_info = mt[f'weights_info_{score_name}']
     is_valid = mt[f'is_valid_{score_name}']
@@ -138,9 +207,41 @@ def _calculate_prs_chunk_batch(
     config: PRSConfig,
 ) -> hl.Table:
     """
-    Calculates all PRS scores for a single chunk of a VDS.
-    """
+    Calculates all Polygenic Risk Scores (PRS) for a single chunk of a
+    VariantDataset (VDS).
 
+    This function processes a subset of variants from a VDS and computes PRS
+    values for all configured scores. It handles variant splitting, annotation
+    with weight information, and dosage-based aggregation per sample.
+
+    If configured, it also computes the number of valid variants (i.e., matched
+    between the VDS and each weights table) used in score calculation.
+
+    Parameters
+    ----------
+    vds : hl.vds.VariantDataset
+        A VariantDataset chunk containing genotype and variant information.
+    weights_tables_map : dict[str, hl.Table]
+        A dictionary mapping score names to their original weights tables.
+    prepared_weights : dict[str, hl.Table]
+        A dictionary of weights tables that have been validated and formatted
+        for PRS computation.
+    config : PRSConfig
+        A configuration object that controls behavior such as whether to split
+        multi-allelic variants, whether to perform strict allele matching, and
+        whether to include matched variant counts.
+
+    Returns
+    -------
+    hl.Table
+        A Hail Table with one row per sample and one column per PRS score. If
+        `include_n_matched=True`, additional columns for the number of valid
+        variants (e.g., `n_matched_score1`) are included.
+
+    See also
+    --------
+    PRSConfig : A configuration class that holds parameters for PRS calculation.
+    """
     # Step 1: Get MatrixTable from VDS, optionally splitting multi-allelics
     if config.split_multi:
         with _log_timing(
@@ -191,6 +292,8 @@ def _calculate_prs_chunk_batch(
 
 
 def _process_chunks_batch(
+    #pylint: disable=too-many-arguments
+    #pylint: disable=too-many-positional-arguments
     n_chunks: int,
     chunked_loci: hl.Table,
     vds: hl.vds.VariantDataset,
@@ -199,7 +302,39 @@ def _process_chunks_batch(
     config: PRSConfig,
 ) -> list[pd.DataFrame]:
     """
-    Iteratively processes each chunk of loci for batch PRS calculation.
+    Processes each genomic chunk to compute PRS values in batch mode.
+
+    This function iterates over genomic chunks defined in `chunked_loci`,
+    filters the VariantDataset (VDS) to each chunk, and calculates Polygenic
+    Risk Scores (PRS) for all configured scores. The results from each chunk
+    are returned as a list of pandas DataFrames, one per chunk.
+
+    Parameters
+    ----------
+    n_chunks : int
+        The total number of genomic chunks to process.
+    chunked_loci : hl.Table
+        A Hail Table containing loci grouped by chunk ID.
+    vds : hl.vds.VariantDataset
+        A VariantDataset containing the full set of genotypes.
+    weights_tables_map : dict[str, hl.Table]
+        A dictionary mapping score names to their original weights tables.
+    prepared_weights : dict[str, hl.Table]
+        A dictionary of weights tables that have been validated and formatted
+        for PRS computation.
+    config : PRSConfig
+        A configuration object that controls behavior such as whether to split
+        multi-allelic variants and which sample ID column to use.
+
+    Returns
+    -------
+    list[pd.DataFrame]
+        A list of pandas DataFrames, one per chunk, each containing per-sample
+        PRS results and optionally matched variant counts.
+
+    See also
+    --------
+    PRSConfig : A configuration class that holds parameters for PRS calculation.
     """
     partial_dfs = []
     for i in range(n_chunks):
@@ -231,12 +366,32 @@ def _process_chunks_batch(
 def _aggregate_and_export_batch(
     partial_dfs: list[pd.DataFrame],
     output_path: str,
-    # sample_id_col: str,
-    # detailed_timings: bool,
     config: PRSConfig
 ) -> None:
     """
-    Aggregates partial results from per-score aggregation and exports.
+    Aggregates partial PRS results from all chunks and exports to disk.
+
+    This function combines the list of pandas DataFrames produced by
+    `_process_chunks_batch`, sums PRS scores across all chunks for each sample,
+    and writes the final per-sample results to a tab-delimited file.
+
+    Parameters
+    ----------
+    partial_dfs : list[pd.DataFrame]
+        A list of pandas DataFrames containing chunk-wise PRS results.
+    output_path : str
+        A destination path on GCS to write the final tab-separated file.
+    config : PRSConfig
+        A configuration object that specifies `sample_id_col` and
+        `detailed_timings`.
+
+    Returns
+    -------
+    None
+
+    See also
+    --------
+    PRSConfig : A configuration class that holds parameters for PRS calculation.
     """
     if not partial_dfs:
         logger.warning(
@@ -262,11 +417,48 @@ def calculate_prs_batch(
     vds: hl.vds.VariantDataset,
     output_path: str,
     config: PRSConfig = PRSConfig(),
-) -> typing.Optional[str]:
+) -> Optional[str]:
     """
     Calculates multiple Polygenic Risk Scores (PRS) concurrently using a
     memory-efficient, per-score annotation approach.
+
+    This function performs a batch PRS calculation on a Hail VariantDataset,
+    using chunked aggregation and optional sample filtering.
+
+    Parameters
+    ----------
+    weights_tables_map : dict[str, hl.Table]
+        A dictionary mapping score names to their corresponding PRS weights
+        tables.
+    vds : hl.vds.VariantDataset
+        A Hail VariantDataset containing both variant and sample data.
+    output_path : str
+        A GCS path (starting with 'gs://') to write the final tab-separated
+        output file.
+    config : PRSConfig, optional
+        A configuration object for all optional parameters. If not provided,
+        default settings will be used. See the `PRSConfig` class for details
+        on all available settings.
+
+    Returns
+    -------
+    Optional[str]
+        The path to the final PRS result file if successful; otherwise, `None`
+        if no valid variants were found.
+
+    Raises
+    ------
+    ValueError
+        If `output_path` is not a valid GCS path, or if the `weights_table`
+        is empty after validation.
+    TypeError
+        If the `config.samples_to_keep` argument is of an unsupported type.
+
+    See also
+    --------
+    PRSConfig : A configuration class that holds parameters for PRS calculation.
     """
+
     timer = SimpleTimer()
     with timer:
         if not output_path.startswith('gs://'):
