@@ -256,8 +256,8 @@ def _calculate_prs_chunk_batch(
 
     # Step 2: Annotate MatrixTable rows with weights info and validity masks
     with _log_timing(
-            "Planning: Calculating and aggregating PRS scores",
-            config.detailed_timings
+        "Planning: Calculating and aggregating PRS scores",
+        config.detailed_timings
     ):
         row_annotations = _build_row_annotations(
             mt, mt_key, weights_tables_map, prepared_weights, config

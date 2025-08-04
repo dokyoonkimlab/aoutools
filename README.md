@@ -13,9 +13,9 @@ convenient functions for:
 
 1.  **Reading PRS Weights Files:** A flexible reader that can handle various
     file formats, with and without headers.
-2.  **Calculating PRS:** Two highly optimized strategies for calculating PRS
-    directly on the All of Us VDS, including a batch mode for calculating
-    multiple scores at once.
+2.  **Calculating PRS:** A cost-efficient strategy for calculating PRS directly
+    on the All of Us VDS, with support for batch mode to calculate multiple
+    scores at once.
 
 ## Installation
 
@@ -97,21 +97,28 @@ Once you have a weights table and have loaded the All of Us VDS, you can
 calculate a PRS.
 
 ```python
-from aoutools.prs import calculate_prs
 import os
+from aoutools.prs import calculate_prs, PRSConfig
 
 # Load the All of Us VDS
 vds_path = os.getenv('WGS_VDS_PATH')
 vds = hl.vds.read_vds(vds_path)
 
 # Assume 'weights_ht' is a Hail Table from read_prs_weights
+config = PRSConfig()
+
 prs_table = calculate_prs(
     weights_table=weights_ht,
     vds=vds,
-    sample_id_col='person_id' # Sets the output sample ID column name
+    output_path='gs://my-bucket/results/single_prs.tsv',
+    config=config
 )
 
-prs_table.show()
+# You can then read the result file
+if output_file_path:
+    import pandas as pd
+    df = pd.read_csv(output_file_path, sep='\t')
+    print(df.head())
 ```
 
 #### Handling Odds Ratios (OR)
@@ -121,11 +128,16 @@ can automatically log-transform them.
 
 ```python
 # Assume 'or_weights_ht' has a column named 'OR'
-prs_table_or = calculate_prs(
-    weights_table=or_weights_ht,
-    vds=vds,
+config_or = PRSConfig(
     weight_col_name='OR',      # Specify the weight column
     log_transform_weight=True  # Enable log transformation
+)
+
+calculate_prs(
+    weights_table=or_weights_ht,
+    vds=vds,
+    output_path='gs://my-bucket/results/or_prs.tsv',
+    config=config_or
 )
 ```
 
@@ -150,6 +162,9 @@ batch_prs_table = calculate_prs_batch(
     vds=vds
 )
 
-# The output is a "wide" table with one column per score
-batch_prs_table.show()
+# You can then use this path to read the results.
+if output_file_path:
+    import pandas as pd
+    df = pd.read_csv(output_file_path, sep='\t')
+    print(df.head())
 ```
