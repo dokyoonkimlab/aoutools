@@ -347,10 +347,14 @@ def _process_chunks_batch(
             ).persist()
 
             intervals_to_filter = _create_1bp_intervals(loci_chunk)
-            vds = hl.vds.filter_intervals(vds, intervals_to_filter, keep=True)
+            # If filter_intervals filters the main vds and reassigns to vds
+            # again, subsequent operation will try to filter empty variable.
+            vds_chunk = hl.vds.filter_intervals(
+                vds, intervals_to_filter, keep=True
+            )
 
             chunk_prs_table = _calculate_prs_chunk_batch(
-                vds,
+                vds_chunk,
                 weights_tables_map,
                 prepared_weights,
                 config

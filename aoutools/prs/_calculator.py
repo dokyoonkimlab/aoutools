@@ -262,11 +262,15 @@ def _process_chunks(
             config.detailed_timings,
         ):
             intervals_to_filter = _create_1bp_intervals(weights_chunk)
-            vds = hl.vds.filter_intervals(vds, intervals_to_filter, keep=True)
+            # If filter_intervals filters the main vds and reassigns to vds
+            # again, subsequent operation will try to filter empty variable.
+            vds_chunk = hl.vds.filter_intervals(
+                vds, intervals_to_filter, keep=True
+            )
 
             chunk_prs_table = _calculate_prs_chunk(
                 weights_table=weights_chunk,
-                vds=vds,
+                vds=vds_chunk,
                 config=config
             )
 
