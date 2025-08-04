@@ -353,10 +353,18 @@ def _process_chunks_batch(
                 vds, intervals_to_filter, keep=True
             )
 
+            # Filter the full weights table via semi-join to retain only the
+            # current chunk's weights. semi_join preserves split variants at
+            # the same locus when split_multi=True.
+            chunked_prepared_weights = {
+                score_name: table.semi_join(loci_chunk)
+                for score_name, table in prepared_weights.items()
+            }
+
             chunk_prs_table = _calculate_prs_chunk_batch(
                 vds_chunk,
                 weights_tables_map,
-                prepared_weights,
+                chunked_prepared_weights,
                 config
             )
 
