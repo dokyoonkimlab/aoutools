@@ -1,4 +1,4 @@
-""""PRS calculator"""
+"""PRS calculator"""
 
 from typing import Optional
 import logging
@@ -32,8 +32,8 @@ def _prepare_mt_split(
     Prepares a MatrixTable for split-multi PRS calculation.
 
     Splits multi-allelic sites in the VDS, orients weights based on
-    `ref_is_effect_allele`, joins with the weights table using (locus, alleles),
-    and calculates dosage using GT after splitting.
+    `ref_is_effect_allele`, joins with the weights table using (locus,
+    alleles), and calculates dosage using GT after splitting.
 
     Parameters
     ----------
@@ -52,7 +52,8 @@ def _prepare_mt_split(
 
     See also
     --------
-    PRSConfig : A configuration class that holds parameters for PRS calculation.
+    PRSConfig : A configuration class that holds parameters for PRS
+    calculation.
     """
     with _log_timing(
         "Planning: Splitting multi-allelic variants and joining",
@@ -370,10 +371,11 @@ def calculate_prs(
     weights_table : hail.Table
         A Hail table containing variant weights. Must contain the following
         columns:
-        - 'chr': str
-        - 'pos': int32
-        - 'effect_allele': str
-        - 'noneffect_allele': str
+
+        - `chr`: str
+        - `pos`: int32
+        - `effect_allele`: str
+        - `noneffect_allele`: str
         - A column for the effect weight (float64), specified by
           `weight_col_name`.
     vds : hail.vds.VariantDataset
@@ -391,9 +393,10 @@ def calculate_prs(
     str or None
         The output path if results are successfully written; otherwise, None.
         The output file is a tab-separated text file with:
+
         - A sample ID column (as configured in `config.sample_id_col`)
-        - 'prs': The calculated PRS value
-        - 'n_matched' (optional): The number of variants used to calculate
+        - `prs`: The calculated PRS value
+        - `n_matched` (optional): The number of variants used to calculate
           the score, included if `config.include_n_matched` is True.
 
     Raises
