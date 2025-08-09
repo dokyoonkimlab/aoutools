@@ -32,6 +32,7 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://github.com/dokyoonkimlab/aoutools"
+
 [tool.pixi.workspace]
 channels = ["conda-forge"]
 platforms = ["osx-arm64"]
@@ -40,8 +41,11 @@ platforms = ["osx-arm64"]
 aoutools = { path = ".", editable = true }
 
 [tool.pixi.tasks]
+docs = "make -C docs html"
+undocs = "make -C docs clean"
 
 [tool.pixi.dependencies]
+# Don't need hail in local as testing will be performed on AoU Workbench
 python = "3.11.*"
 sphinx = ">=8.2.3,<9"
 sphinx-autodoc-typehints = ">=3.2.0,<4"

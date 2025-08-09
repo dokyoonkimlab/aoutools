@@ -191,7 +191,7 @@ packages:
 - pypi: ./
   name: aoutools
   version: 0.1.0
-  sha256: e37b4f34fbbca2564003b3567f348b7aba7e2be4b0a5beeaffdf3ae69f031045
+  sha256: a8994d2807890ed8b68a04812bc936a5d12e12210d03ab8289cac0d2b4210dc6
   requires_dist:
   - hail
   - pandas
