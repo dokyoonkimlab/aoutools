@@ -1,6 +1,6 @@
 """Internal utilities for the PRS calculator"""
 
-import typing
+from typing import Union
 import logging
 from math import ceil
 import hail as hl
@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 def _prepare_samples_to_keep(
-    samples: typing.Union[hl.Table, list, set, tuple, int, float, str]
+    samples: Union[hl.Table, list, set, tuple, int, float, str]
 ) -> hl.Table:
     """
     Converts a flexible list of samples into a keyed Hail Table.

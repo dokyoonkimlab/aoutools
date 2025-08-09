@@ -27,14 +27,16 @@ classifiers = [
 ]
 dependencies = [
     "hail",
-    "pandas"
+    "pandas",
+    "pgscatalog.core",
+    "tqdm"
 ]
 
 [project.urls]
 Homepage = "https://github.com/dokyoonkimlab/aoutools"
 
 [tool.pixi.workspace]
-channels = ["conda-forge"]
+channels = ["conda-forge", "bioconda"]
 platforms = ["osx-arm64"]
 
 [tool.pixi.pypi-dependencies]
@@ -47,7 +49,10 @@ undocs = "make -C docs clean"
 [tool.pixi.dependencies]
 # Don't need hail in local as testing will be performed on AoU Workbench
 python = "3.11.*"
+pandas = ">=2.3.1,<3"
+"pgscatalog.core" = ">=1.0.1,<2"
 sphinx = ">=8.2.3,<9"
 sphinx-autodoc-typehints = ">=3.2.0,<4"
 mypy = ">=1.17.1,<2"
 furo = ">=2024.8.6,<2025"
+tqdm = ">=4.67.1,<5"
