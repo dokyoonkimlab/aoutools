@@ -22,6 +22,31 @@ logger = logging.getLogger(__name__)
 
 
 def _normalize_arg(arg: Union[Iterable[str], str, None]) -> list[str]:
+    """
+    Normalize an argument into a list of strings.
+
+    This helper ensures that the returned value is always a list of strings,
+    regardless of whether the input is a single string, an iterable of strings,
+    or None.
+
+    Parameters
+    ----------
+    arg : Union[Iterable[str], str, None]
+        The input value to normalize. Can be:
+        - A single string (will be wrapped in a list)
+        - An iterable of strings (converted to a list)
+        - None (returns an empty list)
+
+    Returns
+    -------
+    list[str]
+        A list of strings derived from the input.
+
+    Raises
+    ------
+    TypeError
+        If `arg` is not None, a string, or an iterable of strings.
+    """
     if arg is None:
         return []
     if isinstance(arg, str):
@@ -32,7 +57,25 @@ def _normalize_arg(arg: Union[Iterable[str], str, None]) -> list[str]:
 
 
 def _rate_limited(max_calls_per_minute):
-    """Decorator to limit function calls to max_calls_per_minute."""
+    """
+    Decorator to limit how frequently a function can be called.
+
+    Parameters
+    ----------
+    max_calls_per_minute : int
+        A maximum number of allowed function calls per minute.
+
+    Returns
+    -------
+    Callable
+        A decorated version of the original function that enforces
+        the call rate limit.
+
+    Notes
+    -----
+    - Uses `time.sleep` to enforce the delay between calls.
+    - Logging will indicate when a call is delayed.
+    """
     min_interval = 60.0 / max_calls_per_minute
 
     def decorator(func):
@@ -56,7 +99,27 @@ def _rate_limited(max_calls_per_minute):
 
 
 def _retry_on_429(max_retries=3, initial_delay=1):
-    """Decorator to retry a function if HTTP 429 is raised."""
+    """
+    Decorator to retry a function when HTTP 429 (Too Many Requests) is raised.
+
+    Parameters
+    ----------
+    max_retries : int, default=3
+        A maximum number of retry attempts before giving up.
+    initial_delay : int or float, default=1
+        An initial delay (in seconds) before retrying. Delay doubles with each
+        attempt.
+
+    Returns
+    -------
+    Callable
+        A decorated version of the function that retries on HTTP 429 errors.
+
+    Raises
+    ------
+    requests.HTTPError
+        If the error is not HTTP 429 or if all retries fail.
+    """
     def decorator(func):
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
@@ -86,8 +149,28 @@ def _retry_on_429(max_retries=3, initial_delay=1):
 @_retry_on_429(max_retries=5, initial_delay=1)
 def fetch_scoring_files(*args, **kwargs):
     """
-    Wrapper around ScoringFiles constructor to apply rate limiting
-    and retry on 429.
+    Fetch scoring files with automatic rate limiting and retry handling.
+
+    This function wraps the `ScoringFiles` constructor to:
+    - Limit API calls to 100 per minute.
+    - Retry on HTTP 429 errors with exponential backoff.
+
+    Parameters
+    ----------
+    *args
+        Positional arguments passed to `ScoringFiles`.
+    **kwargs
+        Keyword arguments passed to `ScoringFiles`.
+
+    Returns
+    -------
+    ScoringFiles
+        A `ScoringFiles` instance created with the provided arguments.
+
+    Raises
+    ------
+    requests.HTTPError
+        If a non-429 HTTP error occurs or all retries fail.
     """
     return ScoringFiles(*args, **kwargs)
 
@@ -281,7 +364,7 @@ def download_pgs(
         with tempfile.TemporaryDirectory() as temp_dir:
             logger.info("Downloading to temporary directory: %s", temp_dir)
 
-            # Call the original function to download files to the temp dir
+            # Call the _download_pgs function to download files to the temp dir
             _download_pgs(
                 outdir=temp_dir,
                 pgs=pgs,
