@@ -1,6 +1,6 @@
 """Reader for PRS weights files"""
 
-from typing import Optional, Union
+from typing import Union
 import logging
 import hail as hl
 import hailtop.fs as hfs
@@ -174,9 +174,10 @@ def _read_prs_weights_noheader(
     file_path: str,
     column_map: dict,
     delimiter: str = '\t',
+    comment: Union[str, List[str]] = '#',
     keep_other_cols: bool = False,
-    min_partitions: Optional[int] = None,
-    validate_alleles: bool = False
+    validate_alleles: bool = False,
+    **kwargs
 ) -> hl.Table:
     """
     Reads a weight file without a header using a column map of indices.
@@ -193,12 +194,16 @@ def _read_prs_weights_noheader(
         A dictionary mapping standard names to 1-based integer indices.
     delimiter : str
         A field delimiter.
+    comment : str or list[str], optional
+        A character, or list of characters, that denote comment lines
+        to be ignored. Default is '#'.
     keep_other_cols : bool
         If True, all non-required columns are preserved.
-    min_partitions : int, optional
-        The minimum number of partitions for the Hail Table.
     validate_alleles : bool
         If True, validates that allele columns contain only ACGT characters.
+    **kwargs : dict, optional
+        Other keyword arguments to pass directly to `hail.import_table`, such
+        as `missing` or `min_partitions`.
 
     Returns
     -------
@@ -227,9 +232,8 @@ def _read_prs_weights_noheader(
         file_path,
         delimiter=delimiter,
         no_header=True,
-        min_partitions=min_partitions,
-        comment='#',
-        missing='NA'
+        comment=comment,
+        **kwargs
     )
 
     standard_cols_exprs = {
@@ -260,9 +264,10 @@ def _read_prs_weights_header(
     file_path: str,
     column_map: dict,
     delimiter: str = '\t',
+    comment: Union[str, List[str]] = '#',
     keep_other_cols: bool = False,
-    min_partitions: Optional[int] = None,
-    validate_alleles: bool = False
+    validate_alleles: bool = False,
+    **kwargs
 ) -> hl.Table:
     """
     Reads a weight file with a header using a column map of names.
@@ -279,12 +284,16 @@ def _read_prs_weights_header(
         A dictionary mapping standard names to user-defined column names.
     delimiter : str
         A field delimiter.
+    comment : str or list[str], optional
+        A character, or list of characters, that denote comment lines
+        to be ignored. Default is '#'.
     keep_other_cols : bool
         If True, all non-required columns are preserved.
-    min_partitions : int, optional
-        The minimum number of partitions for the Hail Table.
     validate_alleles : bool
         If True, validates that allele columns contain only ACGT characters.
+    **kwargs : dict, optional
+        Other keyword arguments to pass directly to `hail.import_table`, such
+        as `missing` or `min_partitions`.
 
     Returns
     -------
@@ -312,12 +321,12 @@ def _read_prs_weights_header(
     }
 
     table = hl.import_table(
-        file_path, delimiter=delimiter,
+        file_path,
+        delimiter=delimiter,
         no_header=False,
-        min_partitions=min_partitions,
         types=types,
-        comment='#',
-        missing='NA'
+        comment=comment,
+        **kwargs
     )
     missing = set(col_names) - set(table.row)
     if missing:
@@ -374,9 +383,10 @@ def read_prs_weights(
     header: bool,
     column_map: dict[str, Union[str, int]],
     delimiter: str = '\t',
+    comment: Union[str, List[str]] = '#',
     keep_other_cols: bool = False,
-    min_partitions: Optional[int] = None,
-    validate_alleles: bool = False
+    validate_alleles: bool = False,
+    **kwargs
 ) -> hl.Table:
     """
     Reads a file containing variant effect weights for PRS calculation.
@@ -407,10 +417,11 @@ def read_prs_weights(
         A field delimiter.
     keep_other_cols : bool, default False
         If True, all columns not specified in `column_map` are preserved.
-    min_partitions : int, optional
-        The minimum number of partitions for the Hail Table.
     validate_alleles : bool, default False
         If True, validates that allele columns contain only ACGT characters.
+    **kwargs : dict, optional
+        Other keyword arguments to pass directly to `hail.import_table`, such
+        as `missing` or `min_partitions`.
 
     Returns
     -------
@@ -455,9 +466,10 @@ def read_prs_weights(
             file_path=gcs_path,
             column_map=column_map,
             delimiter=delimiter,
+            comment=comment,
             keep_other_cols=keep_other_cols,
-            min_partitions=min_partitions,
             validate_alleles=validate_alleles,
+            **kwargs
         )
 
     logger.info(

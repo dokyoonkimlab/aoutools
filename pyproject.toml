@@ -29,7 +29,8 @@ dependencies = [
     "hail",
     "pandas",
     "pgscatalog.core",
-    "tqdm"
+    "tqdm",
+    "google-cloud-storage"
 ]
 
 [project.urls]
@@ -56,3 +57,4 @@ sphinx-autodoc-typehints = ">=3.2.0,<4"
 mypy = ">=1.17.1,<2"
 furo = ">=2024.8.6,<2025"
 tqdm = ">=4.67.1,<5"
+google-cloud-storage = ">=3.2.0,<4"
