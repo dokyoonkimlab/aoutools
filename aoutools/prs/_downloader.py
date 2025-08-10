@@ -1,17 +1,22 @@
 """Downloader for PGS Catalog scoring files."""
 
+import os
 from typing import Iterable, Union
 import concurrent
 import functools
 import logging
 import pathlib
 import time
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
 
 import requests
 from tqdm import tqdm
 
 from pgscatalog.core.lib import ScoringFiles, GenomeBuild, Config
+
+from google.cloud import storage
+from google.cloud.exceptions import GoogleCloudError
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +92,7 @@ def fetch_scoring_files(*args, **kwargs):
     return ScoringFiles(*args, **kwargs)
 
 
-def download_pgs(
+def _download_pgs(
     outdir: str,
     pgs: Union[Iterable[str], str, None] = None,
     efo: Union[Iterable[str], str, None] = None,
@@ -208,3 +213,131 @@ def download_pgs(
             logger.info("Download complete")
 
     logger.info("All downloads finished")
+
+
+def download_pgs(
+    outdir: str,
+    pgs: Union[Iterable[str], str, None] = None,
+    efo: Union[Iterable[str], str, None] = None,
+    pgp: Union[Iterable[str], str, None] = None,
+    build: str | None = "GRCh38",
+    efo_include_children: bool = True,
+    overwrite_existing_file: bool = False,
+    user_agent: str | None = None,
+    verbose: bool = False,
+) -> None:
+    """
+    Download PGS Catalog scoring files to a local directory or a GCS bucket.
+
+    This function intelligently detects the output path type. If 'outdir'
+    starts with 'gs://', it uses a temporary directory and the
+    google-cloud-storage library to upload files. Otherwise, it saves
+    directly to the local path.
+
+    Parameters
+    ----------
+    outdir : str
+        A local path (e.g., "/home/user/scores") or a GCS path
+        (e.g., "gs://my-bucket/pgs_scores").
+    pgs : str or iterable of str, optional
+        PGS Catalog ID(s) (e.g., "PGS000194"). Can be a single string, list,
+        tuple, or set of strings.
+    efo : str or iterable of str, optional
+        Traits described by EFO term(s) (e.g., "EFO_0004611"). Can be a single
+        string or iterable of strings.
+    pgp : str or iterable of str, optional
+        PGP publication ID(s) (e.g., "PGP000007"). Can be a single string or
+        iterable of strings.
+    build : str, optional
+        Genome build for harmonized scores: "GRCh37" or "GRCh38". Default is
+        "GRCh38". Choosing "GRCh37" triggers a warning as All of Us genetic
+        data is based on GRCh38.
+    efo_include_children : bool, default True
+        Whether to include scoring files tagged with descendant EFO terms.
+    overwrite_existing_file : bool, default False
+        Whether to overwrite existing files if newer versions are available.
+    user_agent : str, optional
+        A custom user agent string for PGS Catalog API requests.
+    verbose : bool, default False
+        Enable verbose logging output.
+
+    Returns
+    -------
+    None
+        This function does not return anything.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the output directory does not exist.
+    ValueError
+        If none of `pgs`, `efo`, or `pgp` parameters are provided.
+    Exception
+        If any download task raises an exception.
+    """
+    # Case 1: Output is a Google Cloud Storage bucket
+    if outdir.startswith("gs://"):
+        logger.info("GCS path detected. Destination: %s", outdir)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            logger.info("Downloading to temporary directory: %s", temp_dir)
+
+            # Call the original function to download files to the temp dir
+            _download_pgs(
+                outdir=temp_dir,
+                pgs=pgs,
+                efo=efo,
+                pgp=pgp,
+                build=build,
+                efo_include_children=efo_include_children,
+                overwrite_existing_file=overwrite_existing_file,
+                user_agent=user_agent,
+                verbose=verbose,
+            )
+
+            # --- Upload to GCS using the Python client library ---
+            try:
+                storage_client = storage.Client()
+                bucket_name = outdir.split("/")[2]
+                prefix = "/".join(outdir.split("/")[3:])
+                bucket = storage_client.bucket(bucket_name)
+
+                logger.info(
+                    "Uploading files to bucket '%s' in folder '%s'...",
+                    bucket_name,
+                    prefix
+                )
+
+                for local_file in pathlib.Path(temp_dir).iterdir():
+                    blob_name = os.path.join(prefix, local_file.name)
+                    blob = bucket.blob(blob_name)
+                    blob.upload_from_filename(str(local_file))
+                    logger.debug("Uploaded %s", local_file.name)
+
+                logger.info("GCS upload complete.")
+
+            except GoogleCloudError as e:
+                logger.error("GCS upload failed: %s", e)
+                raise  # Re-raise the exception after logging it
+            except IndexError:
+                logger.error("Invalid GCS path format: %s", outdir)
+                raise ValueError(
+                    "GCS path must be in 'gs://bucket-name/...' format."
+                )
+
+    # Case 2: Output is a standard local directory
+    else:
+        logger.info("Local path detected. Saving files to: %s", outdir)
+        pathlib.Path(outdir).mkdir(parents=True, exist_ok=True)
+
+        _download_pgs(
+            outdir=outdir,
+            pgs=pgs,
+            efo=efo,
+            pgp=pgp,
+            build=build,
+            efo_include_children=efo_include_children,
+            overwrite_existing_file=overwrite_existing_file,
+            user_agent=user_agent,
+            verbose=verbose,
+        )
+        logger.info("Download to local directory complete.")

@@ -22,7 +22,7 @@ from ._config import (
 )
 
 # Import the PGS catalog downloader from the internal _downloader.py module
-from ._config import (
+from ._downloader import (
     download_pgs,
 )
 
