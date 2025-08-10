@@ -11,12 +11,12 @@ import tempfile
 from concurrent.futures import ThreadPoolExecutor
 
 import requests
-from tqdm import tqdm
 
-from pgscatalog.core.lib import ScoringFiles, GenomeBuild, Config
+# from pgscatalog.core.lib import ScoringFiles, GenomeBuild, Config
 
-from google.cloud import storage
-from google.cloud.exceptions import GoogleCloudError
+# from tqdm import tqdm
+# from google.cloud import storage
+# from google.cloud.exceptions import GoogleCloudError
 
 logger = logging.getLogger(__name__)
 
@@ -172,8 +172,29 @@ def fetch_scoring_files(*args, **kwargs):
     requests.HTTPError
         If a non-429 HTTP error occurs or all retries fail.
     """
+    try:
+        from pgscatalog.core.lib import ScoringFiles
+    except ImportError:
+        raise ImportError(_PGS_ERROR_MSG)
     return ScoringFiles(*args, **kwargs)
 
+
+# The optional dependency error message
+_PGS_ERROR_MSG = (
+    "Note: Using this function requires installing dependencies that will "
+    "disable the `dsub` tool due to a version conflict with "
+    "`pgscatalog.core`.\n\n"
+    "* To proceed and disable `dsub`, run one of the following "
+    "commands:\n"
+    "  - In a terminal:\n"
+    "    `pip install aoutools[pgs]`\n"
+    "  - In a Jupyter cell:\n"
+    "    `!pip install aoutools[pgs]`\n\n"
+    "* To keep `dsub` working, the recommended alternative is to use\n"
+    "  the `pgscatalog.core` command-line tool via `pipx`. For details,\n"
+    "  please see their documentation:\n"
+    "  `https://github.com/PGScatalog/pgscatalog-core`"
+)
 
 def _download_pgs(
     outdir: str,
@@ -229,6 +250,12 @@ def _download_pgs(
     Exception
         If any download task raises an exception.
     """
+    # Guarded imports
+    try:
+        from pgscatalog.core.lib import GenomeBuild, Config
+    except ImportError:
+        raise ImportError(_PGS_ERROR_MSG)
+
     pgs = _normalize_arg(pgs)
     efo = _normalize_arg(efo)
     pgp = _normalize_arg(pgp)
@@ -289,11 +316,23 @@ def _download_pgs(
                 )
             )
 
-        for future in tqdm(
-            concurrent.futures.as_completed(futures), total=len(futures)
-        ):
+        try:
+            from tqdm import tqdm
+            iterable = tqdm(
+                concurrent.futures.as_completed(futures), total=len(futures)
+            )
+        except ImportError:
+            iterable = concurrent.futures.as_completed(futures)
+
+        for future in iterable:
             future.result()
             logger.info("Download complete")
+
+        # for future in tqdm(
+        #     concurrent.futures.as_completed(futures), total=len(futures)
+        # ):
+        #     future.result()
+        #     logger.info("Download complete")
 
     logger.info("All downloads finished")
 
@@ -358,6 +397,16 @@ def download_pgs(
     Exception
         If any download task raises an exception.
     """
+    # Check for optional dependencies
+    try:
+        # These are needed for the GCS upload functionality
+        from google.cloud import storage
+        from google.cloud.exceptions import GoogleCloudError
+    except ImportError:
+        # If imports fail but we're not using GCS path, it's okay.
+        # If we are, the `if` block below will catch it.
+        pass
+
     # Case 1: Output is a Google Cloud Storage bucket
     if outdir.startswith("gs://"):
         logger.info("GCS path detected. Destination: %s", outdir)

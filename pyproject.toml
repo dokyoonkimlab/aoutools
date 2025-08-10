@@ -28,9 +28,14 @@ classifiers = [
 dependencies = [
     "hail",
     "pandas",
+]
+
+# Optional dependencies for downloader functionality
+[project.optional-dependencies]
+pgs = [
     "pgscatalog.core",
+    "google-cloud-storage",
     "tqdm",
-    "google-cloud-storage"
 ]
 
 [project.urls]
