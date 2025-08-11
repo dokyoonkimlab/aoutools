@@ -1,11 +1,11 @@
 # aoutools: Tools for All of Us Researcher Workbench
 
-`aoutools` is a Python library designed to simplify common analysis tasks on the
+aoutools is a Python library designed to simplify common analysis tasks on the
 All of Us Researcher Workbench.
 
 ## Overview
 
-`aoutools` aims to provides a suite of high-level functions designed to make All
+aoutools aims to provides a suite of high-level functions designed to make All
 of Us data analyses more accessible.
 
 The initial release focuses on the `aoutools.prs` submodule, which offers
@@ -19,10 +19,11 @@ convenient functions for:
 
 ## Installation
 
-You can install `aoutools` via pip:
+You can install aoutools via pip on All of Us Workbench:
 
 ```bash
-pip install aoutools
+# Use !pip if running in a Jupyter notebook
+pip install git+https://github.com/dokyoonkimlab/aoutools.git
 ```
 
 ## Usage
@@ -78,7 +79,7 @@ column_map_no_header = {
 }
 
 weights_ht = read_prs_weights(
-    file_path='local_prscs_output.txt', # The function will auto-stage this to GCS
+    file_path='local_weights_file.txt', # The function will auto-stage this to GCS
     header=False,
     column_map=column_map_no_header,
     keep_other_cols=True

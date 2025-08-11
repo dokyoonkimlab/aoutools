@@ -285,13 +285,13 @@ packages:
 - pypi: ./
   name: aoutools
   version: 0.1.0
-  sha256: 62526dbade62ae63487155f9bc2dd43c454fd2426e7435d7a1fd2c45e9a39335
+  sha256: bf02a5bcacfd009e1f9355c5d613597b7eb443a41a639aeccee482321e9d1889
   requires_dist:
   - hail
   - pandas
-  - pgscatalog-core
-  - tqdm
-  - google-cloud-storage
+  - pgscatalog-core ; extra == 'pgs'
+  - google-cloud-storage ; extra == 'pgs'
+  - tqdm ; extra == 'pgs'
   requires_python: '>=3.8'
   editable: true
 - conda: https://conda.anaconda.org/conda-forge/noarch/attrs-25.3.0-pyh71513ae_0.conda

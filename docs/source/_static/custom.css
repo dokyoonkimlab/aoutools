@@ -1,3 +1,9 @@
+/* Makes the sidebar title bold */
+.sidebar-brand-text {
+    font-weight: bold;
+}
+
+/* Add margins for the signature section */
 dt.sig {
     margin-top: 1.5em !important;
     margin-bottom: 1.5em !important;
