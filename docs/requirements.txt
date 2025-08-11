@@ -1,0 +1,4 @@
+# Dependencies for building documentation
+sphinx
+sphinx-autodoc-typehints
+furo
