@@ -258,10 +258,6 @@ def _process_chunks(
                 full_weights_table.chunk_id == i
             ).persist()
 
-        with _log_timing(
-            "Planning: Filtering VDS to variants in weights table chunk",
-            config.detailed_timings,
-        ):
             intervals_to_filter = _create_1bp_intervals(weights_chunk)
             # If filter_intervals filters the main vds and reassigns to vds
             # again, subsequent operation will try to filter empty variable.
