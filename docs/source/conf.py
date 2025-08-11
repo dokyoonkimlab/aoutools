@@ -17,6 +17,12 @@ release = '0.1.0'
 import os
 import sys
 sys.path.insert(0, os.path.abspath('../..'))
+# Mock heavy imports for autodoc to avoid installing large/system-specific packages
+autodoc_mock_imports = [
+    "hail",
+    "google.cloud",   # if you don't want to install GCP libs in RTD
+    "pgscatalog.core" # could also be mocked if you don't want to install it
+]
 extensions = [
     'sphinx.ext.autodoc',       # Pulls documentation from docstrings.
     'sphinx.ext.napoleon',      # Understands Google-style docstrings.
