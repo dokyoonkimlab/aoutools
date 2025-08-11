@@ -1,0 +1,41 @@
+# .github/workflows/ci.yml
+
+name: Run Unit Tests
+
+# This workflow will run on every push to the main branch
+# and on every pull request that targets the main branch.
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    # The type of runner that the job will run on
+    runs-on: ubuntu-latest
+
+    steps:
+      # Step 1: Checks out your repository under $GITHUB_WORKSPACE,
+      # so your job can access it.
+      - name: Check out repository code
+        uses: actions/checkout@v4
+
+      # Step 2: Set up Pixi. This action downloads and caches the
+      # pixi binary, making it available to subsequent steps.
+      - name: Set up pixi
+        uses: prefix-dev/setup-pixi@v0.5.1
+        with:
+          # Caches the pixi environment to speed up subsequent runs
+          cache: true
+
+      # Step 3: Install project dependencies. This command reads your
+      # pyproject.toml and pixi.lock file and installs all the
+      # necessary packages (including pytest and pytest-mock).
+      - name: Install dependencies
+        run: pixi install
+
+      # Step 4: Run the tests. This executes the 'test' task defined
+      # in your pyproject.toml, which runs 'pytest -v'.
+      - name: Run pytest
+        run: pixi run test
