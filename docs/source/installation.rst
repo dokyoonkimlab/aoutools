@@ -10,22 +10,21 @@ cell:
     !pip install git+https://github.com/dokyoonkimlab/aoutools.git
 
 Using the ``download_pgs`` Function
-===================================
+-----------------------------------
 
 The ``download_pgs`` function is used to download harmonized score files from
 the `PGS Catalog`_.
 
 How It Works
-------------
+^^^^^^^^^^^^
 
 The design of the ``download_pgs`` function is centered on resolving a specific
 dependency conflict to ensure compatibility within the All of Us Researcher
 Workbench.
 
-The core issue is that the Google Cloud **dsub** library and the
-**``pgscatalog.core``** library require conflicting versions of a shared
-dependency, ``tenacity``. Installing both in the same environment would cause
-errors.
+The core issue is that the dsub library and the pgscatalog.core library require
+conflicting versions of a shared dependency, tenacity. Installing both in the
+same environment would cause errors.
 
 To solve this, ``download_pgs`` works as follows:
 
@@ -42,7 +41,7 @@ This approach allows you to use both the ``dsub`` job scheduler and the
 ``download_pgs`` function in the same project without any conflicts.
 
 Customizing the Virtual Environment Path
-----------------------------------------
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 By default, the virtual environment is created in your home directory at
 ``~/.aoutools/pgscatalog_env``.
@@ -69,5 +68,5 @@ following to a notebook cell:
     # at the custom path specified above.
     download_pgs(outdir='your_output_directory', pgs='PGS000001')
 
-.. _PGS Catalog: https://www.pgscatalog.org/
 
+.. _PGS Catalog: https://www.pgscatalog.org/

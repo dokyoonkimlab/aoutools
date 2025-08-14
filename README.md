@@ -1,3 +1,8 @@
+> **Disclaimer:** This project is **not affiliated with, endorsed by, or
+> sponsored by** the *All of Us Research Program*. The software is provided **as
+> is**, without warranty. It is in an **early development stage**, and
+> functions, APIs, and signatures may change frequently without notice.
+
 # aoutools: Tools for All of Us Researcher Workbench
 
 aoutools is a Python library designed to simplify common analysis tasks on the
@@ -25,6 +30,9 @@ You can install aoutools via pip on All of Us Workbench:
 # Use !pip if running in a Jupyter notebook
 pip install git+https://github.com/dokyoonkimlab/aoutools.git
 ```
+
+Please check the online documentation at: [aoutools
+Documentation](https://aoutools.readthedocs.io)
 
 ## Usage
 

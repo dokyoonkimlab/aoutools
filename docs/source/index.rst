@@ -9,6 +9,13 @@ aoutools: Tools for All of Us Researcher Workbench
 aoutools is a Python library designed to simplify common analysis tasks on the
 All of Us Researcher Workbench.
 
+.. note::
+
+   **Disclaimer:** This project is **not affiliated with, endorsed by, or
+   sponsored by** the *All of Us Research Program*. The software is provided
+   **as is**, without warranty. It is in an **early development stage**, and
+   functions, APIs, and signatures may change frequently without notice.
+
 Overview
 --------
 
