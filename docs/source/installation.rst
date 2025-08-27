@@ -7,6 +7,10 @@ cell:
 
 .. code-block:: bash
 
+    # From PyPI
+    !pip install aoutools
+
+    # From GitHub
     !pip install git+https://github.com/dokyoonkimlab/aoutools.git
 
 Using the ``download_pgs`` Function

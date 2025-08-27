@@ -173,8 +173,8 @@ def _read_prs_weights_noheader(
     #pylint: disable=too-many-positional-arguments
     file_path: str,
     column_map: dict,
-    delimiter: str = '\t',
-    comment: Union[str, list[str]] = '#',
+    delimiter: str,
+    comment: Union[str, list[str]],
     keep_other_cols: bool = False,
     validate_alleles: bool = False,
     **kwargs
@@ -196,7 +196,7 @@ def _read_prs_weights_noheader(
         A field delimiter.
     comment : str or list[str], optional
         A character, or list of characters, that denote comment lines
-        to be ignored. Default is '#'.
+        to be ignored.
     keep_other_cols : bool
         If True, all non-required columns are preserved.
     validate_alleles : bool
@@ -263,8 +263,8 @@ def _read_prs_weights_header(
     #pylint: disable=too-many-positional-arguments
     file_path: str,
     column_map: dict,
-    delimiter: str = '\t',
-    comment: Union[str, list[str]] = '#',
+    delimiter: str,
+    comment: Union[str, list[str]],
     keep_other_cols: bool = False,
     validate_alleles: bool = False,
     **kwargs
@@ -382,7 +382,7 @@ def read_prs_weights(
     file_path: str,
     header: bool,
     column_map: dict[str, Union[str, int]],
-    delimiter: str = '\t',
+    delimiter: str = ',',
     comment: Union[str, list[str]] = '#',
     keep_other_cols: bool = False,
     validate_alleles: bool = False,
@@ -413,8 +413,11 @@ def read_prs_weights(
         'noneffect_allele', and 'weight'.
         Example for header=True: {'chr': 'CHR', 'pos': 'BP', ...}
         Example for header=False: {'chr': 1, 'pos': 2, ...}
-    delimiter : str, default '\t'
+    delimiter : str, default ','
         A field delimiter.
+    comment : str or list[str], optional
+        A character, or list of characters, that denote comment lines
+        to be ignored.
     keep_other_cols : bool, default False
         If True, all columns not specified in `column_map` are preserved.
     validate_alleles : bool, default False

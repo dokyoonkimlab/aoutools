@@ -204,6 +204,11 @@ def download_pgs(
     verbose : bool, default False
         Enable verbose logging.
 
+    Returns
+    -------
+    None
+        The PGS Catalog score file(s) saved to the specified output path.
+
     Raises
     ------
     FileNotFoundError

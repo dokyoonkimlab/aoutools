@@ -1,8 +1,20 @@
 How-To: Calculate a Polygenic Risk Score (PRS)
 ==============================================
 
-This guide walks through the process of calculating a single or multiple
-Polygenic Risk Scores (PRS) using the `aoutools.prs` submodule.
+This guide shows you how to calculate one or more Polygenic Risk Scores (PRS)
+using the `aoutools.prs` submodule.
+
+
+.. note::
+
+   To get started, you’ll need a Dataproc cluster set up for Hail Genomic
+   Analysis. A good starting point is a master node with 8 CPUs, 52 GB RAM, and
+   300 GB storage, plus 50 preemptible workers with 4 CPUs, 15 GB RAM, and 300
+   GB storage each. This setup costs around $6 per hour and is enough to handle
+   PRS weights from about 1 million variants. If you plan to run batch
+   calculations with several large-scale weight files, you need a more powerful
+   setup.
+
 
 Step 1: Reading PRS Weights Files
 ---------------------------------
@@ -15,7 +27,11 @@ different file structures.
 .. code-block:: python
 
     import hail as hl
+    import logging
     from aoutools.prs import read_prs_weights
+
+    # Set logging level to INFO to view logs and check function correctness.
+    logging.basicConfig(level=logging.INFO)
 
     # Define a map from your file's column names to the required names
     column_map = {
