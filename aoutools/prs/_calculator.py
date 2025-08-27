@@ -296,7 +296,7 @@ def _aggregate_and_export(
         A list of Pandas DataFrames, where each contains partial PRS results
         for a chunk.
     output_path : str
-        A destination path on GCS to write the final tab-separated file.
+        A destination path on GCS to write the final comma-separated file.
     config : PRSConfig
         A configuration object that specifies `sample_id_col` and
         `detailed_timings`.
@@ -325,7 +325,7 @@ def _aggregate_and_export(
             f"Exporting final result to {output_path}", config.detailed_timings
     ):
         with hfs.open(output_path, 'w') as f:
-            final_df.to_csv(f, sep='\t', index=True, header=True)
+            final_df.to_csv(f, sep=',', index=True, header=True)
 
 
 def calculate_prs(
@@ -377,7 +377,7 @@ def calculate_prs(
     vds : hail.vds.VariantDataset
         A Hail VariantDataset containing both variant and sample data.
     output_path : str
-        A GCS path (starting with 'gs://') to write the final tab-separated
+        A GCS path (starting with 'gs://') to write the final comma-separated
         output file.
     config : PRSConfig, optional
         A configuration object for all optional parameters. If not provided,
@@ -388,7 +388,7 @@ def calculate_prs(
     -------
     str or None
         The output path if results are successfully written; otherwise, None.
-        The output file is a tab-separated text file with:
+        The output file is a comma-separated text file with:
 
         - A sample ID column (as configured in `config.sample_id_col`)
         - `prs`: The calculated PRS value

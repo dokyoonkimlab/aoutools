@@ -385,14 +385,14 @@ def _aggregate_and_export_batch(
 
     This function combines the list of pandas DataFrames produced by
     `_process_chunks_batch`, sums PRS scores across all chunks for each sample,
-    and writes the final per-sample results to a tab-delimited file.
+    and writes the final per-sample results to a comma-delimited file.
 
     Parameters
     ----------
     partial_dfs : list[pd.DataFrame]
         A list of pandas DataFrames containing chunk-wise PRS results.
     output_path : str
-        A destination path on GCS to write the final tab-separated file.
+        A destination path on GCS to write the final comma-separated file.
     config : PRSConfig
         A configuration object that specifies `sample_id_col` and
         `detailed_timings`.
@@ -421,7 +421,7 @@ def _aggregate_and_export_batch(
             f"Exporting final result to {output_path}", config.detailed_timings
     ):
         with hfs.open(output_path, 'w') as f:
-            final_df.to_csv(f, sep='\t', index=True, header=True)
+            final_df.to_csv(f, sep=',', index=True, header=True)
 
 
 def calculate_prs_batch(
@@ -445,7 +445,7 @@ def calculate_prs_batch(
     vds : hl.vds.VariantDataset
         A Hail VariantDataset containing both variant and sample data.
     output_path : str
-        A GCS path (starting with 'gs://') to write the final tab-separated
+        A GCS path (starting with 'gs://') to write the final comma-separated
         output file.
     config : PRSConfig, optional
         A configuration object for all optional parameters. If not provided,
