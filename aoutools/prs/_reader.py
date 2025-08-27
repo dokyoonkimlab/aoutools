@@ -522,5 +522,9 @@ def read_prscs(
         'noneffect_allele': 5, 'weight': 6
     }
     return read_prs_weights(
-        file_path=file_path, header=False, column_map=prscs_map, **kwargs
+        file_path=file_path,
+        header=False,
+        column_map=prscs_map,
+        delimiter='\t',
+        **kwargs
     )
