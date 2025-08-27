@@ -43,7 +43,7 @@ different file structures.
     }
 
     weights_ht = read_prs_weights(
-        file_path='gs://my-bucket/data/my_weights.tsv',
+        file_path='gs://my-bucket/data/my_weights.csv',
         header=True,
         column_map=column_map
     )
@@ -68,7 +68,7 @@ PRScs.
     }
 
     weights_ht = read_prs_weights(
-        file_path='local_weights_file.txt', # The function will auto-stage this to GCS
+        file_path='local_weights_file.csv', # The function will auto-stage this to GCS
         header=False,
         column_map=column_map_no_header,
         keep_other_cols=True
@@ -77,7 +77,7 @@ PRScs.
 
     # Using the convenient wrapper for PRS-CS files
     prscs_ht = read_prscs(
-        file_path='local_prscs_output.txt'
+        file_path='local_prscs_output.csv'
     )
 
 
@@ -97,7 +97,7 @@ PRS.
     prs_table = calculate_prs(
         weights_table=weights_ht,
         vds=vds,
-        output_path='gs://my-bucket/results/single_prs.tsv',
+        output_path='gs://my-bucket/results/single_prs.csv',
         config=PRSConfig()
     )
 
@@ -132,5 +132,7 @@ highly recommended as it reads the VDS only once.
     # Calculate all scores in a single pass
     batch_prs_table = calculate_prs_batch(
         weights_map=weights_map,
-        vds=vds
+        vds=vds,
+        output_path='gs://my-bucket/results/batch_prs.csv',
+        config=PRSConfig()
     )
