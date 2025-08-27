@@ -40,6 +40,9 @@ test = [
 
 [project.urls]
 Homepage = "https://github.com/dokyoonkimlab/aoutools"
+Repository = "https://github.com/dokyoonkimlab/aoutools"
+Issues = "https://github.com/dokyoonkimlab/aoutools/issues"
+Documentation = "https://aoutools.readthedocs.io"
 
 [tool.pixi.workspace]
 channels = ["conda-forge", "bioconda"]
