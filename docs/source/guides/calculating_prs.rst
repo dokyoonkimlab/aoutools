@@ -114,7 +114,7 @@ BETA values.
     )
 
 
-Best Practice: Batch PRS Calculation
+Tip: Batch PRS Calculation
 ------------------------------------
 To calculate multiple scores efficiently, use `calculate_prs_batch`. This is
 highly recommended as it reads the VDS only once.
