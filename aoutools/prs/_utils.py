@@ -83,15 +83,12 @@ def _stage_local_file_to_gcs(
         workspace_bucket, 'data', sub_dir, os.path.basename(file_path)
     )
 
-    if hfs.exists(gcs_path):
-        logger.info("File already exists at %s, skipping copy.", gcs_path)
-    else:
-        logger.info(
-            "Local file detected. Staging '%s' to '%s'...",
-            file_path,
-            gcs_path,
-        )
-        hfs.copy(f'file://{os.path.abspath(file_path)}', gcs_path)
+    logger.info(
+        "Local file detected. Staging '%s' to '%s'...",
+        file_path,
+        gcs_path,
+    )
+    hfs.copy(f'file://{os.path.abspath(file_path)}', gcs_path)
 
     return gcs_path
 
