@@ -12,21 +12,21 @@ The initial release focuses on the `aoutools.prs` submodule, which offers
 convenient functions for:
 
 1.  **Reading PRS Weights Files:** A flexible reader that can handle various
-    file formats, with and without headers.
+    file formats, both with and without headers.
 2.  **Calculating PRS:** A cost-efficient strategy for calculating PRS directly
     on the All of Us VDS, with support for batch mode to calculate multiple
     scores at once.
 
-You can install aoutools via pip on All of Us Workbench:
+You can install `aoutools` via `pip` using either the Python Package Index
+(PyPI) or its GitHub repository. On the All of Us Researcher Workbench, you can
+run the following commands directly in a Jupyter Notebook cell.
 
 ```bash
-# Use !pip if running in a Jupyter notebook
-
 # 1. From PyPI
-pip install aoutools
+!pip install aoutools
 
 # 2. From Github
-pip install git+https://github.com/dokyoonkimlab/aoutools.git
+!pip install git+https://github.com/dokyoonkimlab/aoutools.git
 ```
 
 Please check the online [aoutools

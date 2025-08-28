@@ -2,7 +2,7 @@ How-To: Calculate a Polygenic Risk Score (PRS)
 ==============================================
 
 This guide shows you how to calculate one or more Polygenic Risk Scores (PRS)
-using the `aoutools.prs` submodule.
+using the **aoutools.prs** submodule.
 
 
 .. note::
@@ -16,9 +16,47 @@ using the `aoutools.prs` submodule.
    setup.
 
 
+Setup
+-----
+
+.. code-block:: python
+
+    import os
+    import logging
+    from importlib import resources
+    import pandas as pd
+    import hail as hl
+
+    # Import functions to calculate PRS
+    from aoutools.prs import (
+        read_prs_weights,
+        read_prscs,
+        calculate_prs,
+        calculate_prs_batch,
+        PRSConfig
+    )
+
+    # Set logging level to INFO to view logs and check function correctness.
+    logging.basicConfig(level=logging.INFO)
+
+    # Bucket path
+    bucket = os.getenv("WORKSPACE_BUCKET")
+
+    # Get paths for example data
+    data_dir_path = str(resources.files("aoutools.data"))
+    prs_weights_header = f"{data_dir_path}/prs_weights_header.csv"
+    prs_weights_noheader = f"{data_dir_path}/prs_weights_noheader.tsv"
+
+    # Initiate Hail
+    hl.default_reference(new_default_reference="GRCh38")
+
+    # VDS file
+    vds = hl.vds.read_vds(os.getenv("WGS_VDS_PATH"))
+
+
 Step 1: Reading PRS Weights Files
 ---------------------------------
-The `read_prs_weights` function is a flexible tool for importing weights files
+The ``read_prs_weights`` function is a flexible tool for importing weights files
 into a validated Hail Table. It uses a `column_map` dictionary to handle
 different file structures.
 
@@ -26,40 +64,41 @@ different file structures.
 
 .. code-block:: python
 
-    import hail as hl
-    import logging
-    from aoutools.prs import read_prs_weights
-
-    # Set logging level to INFO to view logs and check function correctness.
-    logging.basicConfig(level=logging.INFO)
-
     # Define a map from your file's column names to the required names
-    column_map = {
+    column_map_header = {
         'chr': 'CHR',
-        'pos': 'BP',
-        'effect_allele': 'A1_EFFECT',
-        'noneffect_allele': 'A2_NONEFFECT',
-        'weight': 'BETA'
+        'pos': 'POS',
+        'effect_allele': 'A1',
+        'noneffect_allele': 'A2',
+        'weight': 'WEIGHT'
     }
 
-    weights_ht = read_prs_weights(
-        file_path='gs://my-bucket/data/my_weights.csv',
+    weights_ht_header = read_prs_weights(
+        file_path=prs_weights_header,
         header=True,
-        column_map=column_map
+        column_map=column_map_header
     )
 
-**Example 2: Header-less file (like PRS-CS output)**
+.. note::
+
+   The files `prs_weights_header` and `prs_weights_noheader` are local, but
+   Hail cannot access them directly from a local Jupyter environment. Therefore,
+   the ``read_prs_weights`` function automatically stages an input file to a
+   temporary Google Cloud Storage (GCS) location at
+   gs://your-workspace-bucket/data/temp_prs_data so that Hail can access them.
+   However, it is recommended for users to upload the input files to a GCS
+   bucket and provide a path that starts with 'gs://'.
+
+**Example 2: Header-less file (like PRScs output)**
 
 The `column_map` uses 1-based integer indices instead of names. For convenience,
-you can use the `read_prscs` wrapper if your weight file is generated from
+you can use the ``read_prscs`` wrapper if your weight file is generated from
 PRScs.
 
 .. code-block:: python
 
-    from aoutools.prs import read_prscs
-
     # Using the main function
-    column_map_no_header = {
+    column_map_noheader = {
         'chr': 1,
         'pos': 3,
         'effect_allele': 4,
@@ -67,17 +106,16 @@ PRScs.
         'weight': 6
     }
 
-    weights_ht = read_prs_weights(
-        file_path='local_weights_file.csv', # The function will auto-stage this to GCS
+    weights_ht_noheader = read_prs_weights(
+        file_path=prs_weights_noheader
         header=False,
-        column_map=column_map_no_header,
-        keep_other_cols=True
+        column_map=column_map_noheader
     )
 
 
     # Using the convenient wrapper for PRS-CS files
     prscs_ht = read_prscs(
-        file_path='local_prscs_output.csv'
+        file_path=prs_weights_noheader
     )
 
 
@@ -88,18 +126,16 @@ PRS.
 
 .. code-block:: python
 
-    import os
-    from aoutools.prs import calculate_prs, PRSConfig
-
-    vds = hl.vds.read_vds(os.getenv('WGS_VDS_PATH'))
-
-    # Assume 'weights_ht' is a Hail Table from Step 1
-    prs_table = calculate_prs(
-        weights_table=weights_ht,
+    # Assume 'weights_ht_header' is a Hail Table from Step 1
+    prs_single = calculate_prs(
+        weights_table=weights_ht_header,
         vds=vds,
-        output_path='gs://my-bucket/results/single_prs.csv',
-        config=PRSConfig()
+        output_path=f"{bucket}/single_prs.csv"
     )
+
+    # Check the result
+    pd.read_csv(prs_single).head()
+
 
 **Advanced: Handling Odds Ratios (OR)**
 
@@ -121,18 +157,18 @@ highly recommended as it reads the VDS only once.
 
 .. code-block:: python
 
-    from aoutools.prs import calculate_prs_batch
-
     # Create a dictionary mapping score names to their weights tables
     weights_map = {
-        'CAD_prs': cad_weights_ht,
-        'Asthma_prs': asthma_weights_ht,
+        'prs1': weights_ht_header,
+        'prs2': weights_ht_noheader,
     }
 
     # Calculate all scores in a single pass
-    batch_prs_table = calculate_prs_batch(
+    prs_batch = calculate_prs_batch(
         weights_map=weights_map,
         vds=vds,
-        output_path='gs://my-bucket/results/batch_prs.csv',
-        config=PRSConfig()
+        output_path=f"{bucket}/batch_prs.csv"
     )
+
+    # Check the result
+    pd.read_csv(prs_batch).head()

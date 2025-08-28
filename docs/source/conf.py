@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.abspath('../..'))
 # Mock heavy imports for autodoc to avoid installing large/system-specific packages
 autodoc_mock_imports = [
     "hail",
+    "hailtop",
     "google.cloud",   # if you don't want to install GCP libs in RTD
     "pgscatalog.core" # could also be mocked if you don't want to install it
 ]
