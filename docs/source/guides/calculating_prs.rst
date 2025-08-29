@@ -11,10 +11,15 @@ using the **aoutools.prs** submodule.
    Analysis. A good starting point is a master node with 8 CPUs, 52 GB RAM, and
    300 GB storage, plus 50 preemptible workers with 4 CPUs, 15 GB RAM, and 300
    GB storage each. This setup costs around $6 per hour and is enough to handle
-   PRS weights from about 1 million variants. If you plan to run batch
-   calculations with several large-scale weight files, you need a more powerful
-   setup.
+   PRS weights from about 1 million variants. The setting was tested on Whole
+   Genome Sequencing (WGS) data from the All of Us V8 release, using all
+   available samples and without any variant or sample filtering. If you plan to
+   run batch calculations with several large-scale weight files, you need a more
+   powerful setup.
 
+Given the specified workspace configuration, the tutorial requires only 1–2
+minutes for both single and batch PRS calculations, not including the
+file-reading time, which is under a minute.
 
 Setup
 -----
@@ -109,7 +114,8 @@ PRScs.
     weights_ht_noheader = read_prs_weights(
         file_path=prs_weights_noheader
         header=False,
-        column_map=column_map_noheader
+        column_map=column_map_noheader,
+        delimiter='\t'
     )
 
 
@@ -122,7 +128,8 @@ PRScs.
 Step 2: Calculating a Single PRS
 --------------------------------
 Once you have a weights table and the All of Us VDS loaded, you can calculate a
-PRS.
+PRS. To see more detailed log information, set
+``PRSConfig(detailed_timings=True)`` and pass it to the ``config`` argument.
 
 .. code-block:: python
 
@@ -152,7 +159,7 @@ BETA values.
 
 Tip: Batch PRS Calculation
 ------------------------------------
-To calculate multiple scores efficiently, use `calculate_prs_batch`. This is
+To calculate multiple scores efficiently, use ``calculate_prs_batch``. This is
 highly recommended as it reads the VDS only once.
 
 .. code-block:: python

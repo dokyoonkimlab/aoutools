@@ -415,7 +415,7 @@ def read_prs_weights(
         Example for header=False: {'chr': 1, 'pos': 2, ...}
     delimiter : str, default ','
         A field delimiter.
-    comment : str or list[str], optional
+    comment : str or list[str], default '#'
         A character, or list of characters, that denote comment lines
         to be ignored.
     keep_other_cols : bool, default False
