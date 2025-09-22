@@ -31,11 +31,12 @@ def calculate_pgs(
     Downloads specified PGS Catalog scoring files and calculates PRS.
 
     This function automates a controlled workflow:
-    1.  **Download**: Fetches scoring files from the PGS Catalog for a
-        specific list of PGS IDs.
+
+    1. **Download**: Fetches scoring files from the PGS Catalog for a specific
+        list of PGS IDs.
     2.  **Read**: Parses the downloaded scoring files into Hail Tables.
-    3.  **Calculate**: Computes the Polygenic Risk Score(s) for each
-        downloaded file and exports a single CSV file.
+    3. **Calculate**: Computes the Polygenic Risk Score(s) for each downloaded
+        file and exports a single CSV file.
 
     Notes
     -----
@@ -50,7 +51,7 @@ def calculate_pgs(
     output_path : str
         A GCS path (e.g., 'gs://bucket/results.csv') for the output file.
     pgs : str or iterable of str
-        One or more PGS Catalog ID(s) (e.g., "PGS000194") to download.
+        One or more PGS Catalog ID(s) (e.g., "PGS000771") to download.
         This argument is required.
     build : str, optional
         The genome build for harmonized scores ("GRCh37" or "GRCh38").
@@ -123,7 +124,9 @@ def calculate_pgs(
                     column_map=pgs_column_map,
                     delimiter='\t',
                     comment='#',
-                    validate_alleles=True
+                    validate_alleles=True,
+                    missing='',
+                    force=True,
                 )
                 weights_tables_map[score_name] = weights_table
             except (ValueError, TypeError) as e:
