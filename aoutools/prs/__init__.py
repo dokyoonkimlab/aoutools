@@ -26,6 +26,11 @@ from ._downloader import (
     download_pgs,
 )
 
+# Import the high-level workflow functions from the internal _workflow.py module
+from ._workflow import (
+    calculate_pgs,
+)
+
 # This defines what a user gets when they type 'from aoutools.prs import *'
 __all__ = [
     'read_prs_weights',
@@ -34,4 +39,5 @@ __all__ = [
     'calculate_prs_batch',
     'PRSConfig',
     'download_pgs',
+    'calculate_pgs',
 ]

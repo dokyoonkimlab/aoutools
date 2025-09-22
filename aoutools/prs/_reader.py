@@ -119,7 +119,7 @@ def _process_prs_weights_table(
     This function consolidates the shared post-processing logic, including:
     1. Optionally validating that allele columns contain only ACGT characters.
     2. Standardizing the chromosome column to ensure it has a 'chr' prefix.
-    3. Filtering out variants with undefined (missing) effect weights.
+    3. Filtering out variants with undefined (missing) or zero-effect weights.
     4. Checking if the table is empty after all filtering.
     5. Checking for duplicate variants.
     6. Logging the final count of loaded variants.
@@ -141,7 +141,7 @@ def _process_prs_weights_table(
     Raises
     ------
     ValueError
-        If the table is empty after filtering for missing weights, or if
+        If the table is empty after filtering for missing/zero weights, or if
         duplicate variants (defined by chromosome, position, and alleles)
         are found in the table.
     """
@@ -149,13 +149,31 @@ def _process_prs_weights_table(
         table = _validate_alleles(table)
 
     table = _standardize_chromosome_column(table)
-    table = table.filter(hl.is_defined(table.weight))
 
+    # Get the count before filtering based on weight
+    count_before_filter = table.count()
+
+    # Filter out variants with missing or zero-effect weights
+    table = table.filter(
+        (hl.is_defined(table.weight)) & (table.weight != 0)
+    )
+
+    # Persist the table here as we need to perform multiple actions on it
+    table = table.persist()
     filtered_row_count = table.count()
+
+    # Log the number of variants removed due to weight issues
+    n_removed = count_before_filter - filtered_row_count
+    if n_removed > 0:
+        logger.info(
+            "Removed %d variants with missing or zero-effect weights.",
+            n_removed
+        )
+
     if filtered_row_count == 0:
         raise ValueError(
             f"Input file '{file_path}' is empty or all variants were "
-            f"filtered out due to missing weights or invalid alleles."
+            f"filtered out due to missing/zero weights or invalid alleles."
         )
 
     _check_duplicated_ids(table, file_path=file_path)

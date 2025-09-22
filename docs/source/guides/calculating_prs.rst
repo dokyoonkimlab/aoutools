@@ -165,14 +165,14 @@ highly recommended as it reads the VDS only once.
 .. code-block:: python
 
     # Create a dictionary mapping score names to their weights tables
-    weights_map = {
+    weights_tables_map = {
         'prs1': weights_ht_header,
         'prs2': weights_ht_noheader,
     }
 
     # Calculate all scores in a single pass
     prs_batch = calculate_prs_batch(
-        weights_map=weights_map,
+        weights_tables_map=weights_map,
         vds=vds,
         output_path=f"{bucket}/batch_prs.csv"
     )
