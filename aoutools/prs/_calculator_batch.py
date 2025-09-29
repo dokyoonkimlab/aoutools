@@ -338,9 +338,9 @@ def _process_chunks_batch(
     """
     partial_dfs = []
     for i in range(n_chunks):
+        # Always show chunk processing time to track progress
         with _log_timing(
-            f"Processing chunk {i + 1}/{n_chunks}",
-            config.detailed_timings
+            f"Processing chunk {i + 1}/{n_chunks}", True
         ):
             loci_chunk = chunked_loci.filter(
                 chunked_loci.chunk_id == i
