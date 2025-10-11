@@ -8,4 +8,5 @@ aoutools.
    :maxdepth: 1
 
    calculating_prs
+   calculating_pgs
    downloading_pgs_scores

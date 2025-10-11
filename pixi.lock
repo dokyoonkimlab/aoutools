@@ -214,8 +214,8 @@ packages:
   timestamp: 1733750512696
 - pypi: ./
   name: aoutools
-  version: 0.1.0
-  sha256: 2dcc1008bfab74db7c661ac86a0e9b883c360a641fbaf4f74930689214bad8f3
+  version: 0.1.1
+  sha256: f91d20eaef5c99b70745cccc4466f92de0bafc98f3a23841a49459eb5ebd511d
   requires_dist:
   - hail
   - pandas
