@@ -77,6 +77,11 @@ def _get_pgscatalog_version(bin_dir: Path) -> Optional[str]:
         return None
     return None
 
+def _pgscatalog_constraint(min_version: str) -> str:
+    """Return the version constraint string for pgscatalog.core."""
+    if sys.version_info < (3, 11):
+        return f"pgscatalog.core>={min_version},<1.0.2"
+    return f"pgscatalog.core>={min_version}"
 
 def _ensure_pgscatalog_download(min_version: str = "1.0.1") -> Path:
     """
@@ -114,7 +119,7 @@ def _ensure_pgscatalog_download(min_version: str = "1.0.1") -> Path:
                 bin_dir / "pip",
                 "install",
                 "--no-user",
-                f"pgscatalog.core>={min_version}"
+                _pgscatalog_constraint(min_version)
             ])
         elif installed_version < min_version:
             logger.info(
@@ -127,7 +132,7 @@ def _ensure_pgscatalog_download(min_version: str = "1.0.1") -> Path:
                 "install",
                 "--no-user",
                 "--upgrade",
-                f"pgscatalog.core>={min_version}"
+                _pgscatalog_constraint(min_version)
             ])
 
         _cached_cli_path = cli_path
