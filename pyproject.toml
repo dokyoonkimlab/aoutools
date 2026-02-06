@@ -6,13 +6,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aoutools"
-version = "0.1.1"
+version = "0.1.2"
 authors = [
   { name="Jaehyun Joo", email="jaehyunjoo@outlook.com" },
 ]
 description = "A library of tools for analyzing All of Us data."
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 keywords = ["all-of-us", "genomics", "bioinformatics", "prs", "hail"]
 
 # This field now points directly to your LICENSE file.
