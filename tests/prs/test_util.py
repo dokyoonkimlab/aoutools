@@ -49,15 +49,19 @@ class TestStageLocalFileToGCS:
             f'file://{local_path}', expected_gcs_path
         )
 
-    def test_skips_copy_if_file_exists_on_gcs(self, mocker):
+    def test_overwrites_if_file_exists_on_gcs(self, mocker):
         """
-        Tests that the copy operation is skipped if the target file
-        already exists on GCS.
+        Tests that the copy still runs when the target already exists on GCS.
+        Staging always overwrites so a stale file is never silently reused.
         """
-        # Override the default mock for hfs.exists for this specific test
         mocker.patch('aoutools.prs._utils.hfs.exists', return_value=True)
-        _stage_local_file_to_gcs('/tmp/local_file.txt', 'my-data')
-        self.mock_hfs_copy.assert_not_called()
+        local_path = '/tmp/local_file.txt'
+        result = _stage_local_file_to_gcs(local_path, 'my-data')
+        expected_gcs_path = 'gs://fake-bucket/data/my-data/local_file.txt'
+        assert result == expected_gcs_path
+        self.mock_hfs_copy.assert_called_once_with(
+            f'file://{local_path}', expected_gcs_path
+        )
 
     def test_raises_error_if_local_file_not_found(self, mocker):
         """

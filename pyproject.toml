@@ -25,10 +25,14 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "Topic :: Scientific/Engineering :: Bio-Informatics",
 ]
+# Note: `hail` is a runtime requirement but is intentionally NOT listed here.
+# It is provided by the All of Us Workbench / Hail Spark environment, ships no
+# wheel for some platforms (e.g. osx-arm64), and pins numpy/pandas tightly, so
+# co-installing it as a hard dependency is neither possible nor desirable. CI
+# installs a pinned hail explicitly (see the pixi `ci` feature below).
 dependencies = [
-    "hail",
-    "pandas",
-    "google-cloud-storage",
+    "pandas>=2.2",
+    "google-cloud-storage>=2.13",
     "packaging",
 ]
 
@@ -50,7 +54,7 @@ aoutools = ["data/*"]
 
 [tool.pixi.workspace]
 channels = ["conda-forge", "bioconda"]
-platforms = ["osx-arm64"]
+platforms = ["osx-arm64", "linux-64"]
 
 [tool.pixi.pypi-dependencies]
 aoutools = { path = ".", editable = true }
@@ -60,11 +64,15 @@ docs = "make -C docs html"
 undocs = "make -C docs clean"
 test = "pytest -v"
 
-# Runtime dependencies only
+# Runtime dependencies only.
+# Versions are aligned to the All of Us Researcher Workbench genomics runtime:
+# Python 3.11 and google-cloud-storage 2.13.x (observed on the Workbench image),
+# with pandas kept compatible with hail 0.2.135, which requires numpy>=2,<3 and
+# therefore pandas>=2.2.
 [tool.pixi.dependencies]
 python = "3.11.*"
-pandas = ">=2.3.1,<3"
-google-cloud-storage = ">=3.2.0,<4"
+pandas = ">=2.2,<3"
+google-cloud-storage = ">=2.13,<3"
 
 # Development dependencies
 [tool.pixi.feature.dev.dependencies]
@@ -77,6 +85,34 @@ pytest-mock = ">=3.14.1,<4"
 python-build = ">=1.3.0,<2"
 twine = ">=6.1.0,<7"
 
-# Enable dev feature by default
+# CI feature: the test suite mocks hail but still needs it importable, so the
+# real library is installed. hail is pinned to the version used on the AoU
+# Workbench and only installed on linux-64 (no osx-arm64 wheel exists); a JDK is
+# provided for its (unused-in-tests) local Spark backend.
+[tool.pixi.feature.ci.dependencies]
+pytest = ">=8.4.1,<9"
+pytest-mock = ">=3.14.1,<4"
+
+# Pinned to the exact versions present on the AoU Workbench Hail runtime so CI
+# is a faithful mirror of the environment researchers actually run. These come
+# from the Workbench `pip freeze`; hail's own metadata confirms they are a
+# mutually-compatible set.
+[tool.pixi.feature.ci.target.linux-64.pypi-dependencies]
+hail = "==0.2.135"
+pyspark = "==3.5.3"
+parsimonious = "==0.10.0"
+scipy = "==1.13.1"
+pyarrow = "==23.0.1"
+
+[tool.pixi.feature.ci.target.linux-64.dependencies]
+openjdk = "11.*"
+# numpy/pandas/google-cloud-storage are conda-provided; pinned exact to the
+# Workbench versions (these intersect with the looser runtime pins above).
+numpy = "==2.0.2"
+pandas = "==2.3.0"
+google-cloud-storage = "==2.13.0"
+
+# Default is the dev environment; ci is a lean linux-64 environment for tests.
 [tool.pixi.environments]
 default = { features = ["dev"], solve-group = "default" }
+ci = { features = ["ci"] }

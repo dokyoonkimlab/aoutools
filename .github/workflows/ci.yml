@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel superseded runs on the same ref to save CI minutes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Tests (linux-64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # Installs the pinned pixi `ci` environment from pixi.lock: Python 3.11,
+      # hail 0.2.135 (+ a JDK) and pytest. hail has no osx-arm64 wheel, so the
+      # suite runs on Linux only, which matches the All of Us Spark runtime.
+      - name: Set up pixi (ci environment)
+        uses: prefix-dev/setup-pixi@v0.10.0
+        with:
+          pixi-version: v0.70.2
+          environments: ci
+          cache: true
+
+      # The test suite mocks hail, so no Spark backend is started; hail only
+      # needs to be importable.
+      - name: Run test suite
+        run: pixi run -e ci test
