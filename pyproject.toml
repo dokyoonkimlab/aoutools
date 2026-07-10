@@ -29,6 +29,7 @@ dependencies = [
     "hail",
     "pandas",
     "google-cloud-storage",
+    "packaging",
 ]
 
 # Optional dependencies for downloader functionality

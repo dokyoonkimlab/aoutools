@@ -23,6 +23,7 @@ from typing import Iterable, Optional, Union
 
 from google.cloud import storage
 from google.cloud.exceptions import GoogleCloudError
+from packaging.version import Version
 
 logger = logging.getLogger(__name__)
 
@@ -121,7 +122,7 @@ def _ensure_pgscatalog_download(min_version: str = "1.0.1") -> Path:
                 "--no-user",
                 _pgscatalog_constraint(min_version)
             ])
-        elif installed_version < min_version:
+        elif Version(installed_version) < Version(min_version):
             logger.info(
                 "Upgrading pgscatalog.core to >= %s (current: %s)",
                 min_version,

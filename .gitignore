@@ -212,3 +212,4 @@ __marimo__/
 
 # macOS specific files
 .DS_Store
+/.agent-shell/

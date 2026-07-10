@@ -1,10 +1,16 @@
 # aoutools/__init__.py
 
-# Defines the official version number for the package.
-__version__ = "0.1.0"
-__author__ = "Jaehyun Joo"
-
 import logging
+from importlib.metadata import version, PackageNotFoundError
+
+# Derive the version from installed package metadata so pyproject.toml is the
+# single source of truth.
+try:
+    __version__ = version("aoutools")
+except PackageNotFoundError:  # not installed (e.g. running from a source tree)
+    __version__ = "0.0.0"
+
+__author__ = "Jaehyun Joo"
 
 # This makes the 'prs' submodule directly accessible after importing
 # 'aoutools'.
