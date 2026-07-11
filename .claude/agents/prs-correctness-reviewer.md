@@ -40,10 +40,12 @@ incomparable across individuals. That is a silent, severe bug. Watch for it.
 `_calculate_dosage` reconstructs the sample's alleles and counts copies of the
 effect allele directly, so the score is absolute (no offset trick).
 `strict_allele_match` gates the filter: when True, `_check_allele_match` requires
-one weights allele to equal REF **and** the other to be in the ALT set; when
-False, only the effect allele is checked against REF-or-ALT and the other allele
-is unverified — which will happily match the wrong variant at a multi-allelic
-locus.
+one weights allele to equal REF **and** the other to be in the ALT set. When
+False there is **no allele check at all** — the only filter is
+`hl.is_defined(mt.weights_info)` on a locus-only join, so any variant sharing the
+locus is scored, including the wrong alt at a multi-allelic site. Both paths gate
+this identically (`_calculator.py`, `_calculator_batch.py`); don't assume the
+weaker setting still verifies the effect allele.
 
 **Dosage and missingness.** `_calculate_dosage` handles both `GT` (global
 indices into `alleles`) and `LGT`/`LA` (local indices via the local-to-global
