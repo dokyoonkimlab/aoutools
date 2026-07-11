@@ -58,14 +58,15 @@ optional
         If True, logs timing information for each major step. Helpful for
         diagnosing performance issues.
     """
+
     chunk_size: int = 20000
     samples_to_keep: (
         hl.Table | Sequence[str] | Sequence[int] | str | int | None
     ) = None
-    weight_col_name: str = 'weight'
+    weight_col_name: str = "weight"
     log_transform_weight: bool = False
     include_n_matched: bool = False
-    sample_id_col: str = 'person_id'
+    sample_id_col: str = "person_id"
     split_multi: bool = True
     ref_is_effect_allele: bool = False
     strict_allele_match: bool = True

@@ -33,11 +33,11 @@ from ._workflow import (
 
 # This defines what a user gets when they type 'from aoutools.prs import *'
 __all__ = [
-    'read_prs_weights',
-    'read_prscs',
-    'calculate_prs',
-    'calculate_prs_batch',
-    'PRSConfig',
-    'download_pgs',
-    'calculate_pgs',
+    "read_prs_weights",
+    "read_prscs",
+    "calculate_prs",
+    "calculate_prs_batch",
+    "PRSConfig",
+    "download_pgs",
+    "calculate_pgs",
 ]

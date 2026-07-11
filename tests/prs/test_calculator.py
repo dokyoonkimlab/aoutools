@@ -4,6 +4,7 @@ Unit tests for the `_calculator.py` submodule.
 These tests use mocking to isolate the main calculation workflow from
 any real Hail/Spark dependencies.
 """
+
 from unittest.mock import MagicMock
 
 import pytest
@@ -19,21 +20,21 @@ def mock_calculator_dependencies(mocker):
     This includes Hail, Pandas, and all imported helper functions.
     """
     # Mock entire libraries
-    mocker.patch('aoutools.prs._calculator.hl', MagicMock())
-    mocker.patch('aoutools.prs._calculator.hfs', MagicMock())
-    mocker.patch('aoutools.prs._calculator.pd', MagicMock())
+    mocker.patch("aoutools.prs._calculator.hl", MagicMock())
+    mocker.patch("aoutools.prs._calculator.hfs", MagicMock())
+    mocker.patch("aoutools.prs._calculator.pd", MagicMock())
 
     # Mock all imported helper functions to test orchestration
-    mocker.patch('aoutools.prs._calculator._prepare_samples_to_keep')
+    mocker.patch("aoutools.prs._calculator._prepare_samples_to_keep")
     mocker.patch(
-        'aoutools.prs._calculator._prepare_weights_for_chunking',
-        return_value=(MagicMock(), 2)  # Returns (mock_table, n_chunks)
+        "aoutools.prs._calculator._prepare_weights_for_chunking",
+        return_value=(MagicMock(), 2),  # Returns (mock_table, n_chunks)
     )
     mocker.patch(
-        'aoutools.prs._calculator._process_chunks',
-        return_value=[MagicMock()]  # Returns a list of mock dataframes
+        "aoutools.prs._calculator._process_chunks",
+        return_value=[MagicMock()],  # Returns a list of mock dataframes
     )
-    mocker.patch('aoutools.prs._calculator._aggregate_and_export')
+    mocker.patch("aoutools.prs._calculator._aggregate_and_export")
 
 
 class TestCalculatePRS:
@@ -52,23 +53,23 @@ class TestCalculatePRS:
         # The fixture already mocks these. We just need to get a reference to
         # them for assertion, not patch them again.
         mock_prep_weights = mocker.patch(
-            'aoutools.prs._calculator._prepare_weights_for_chunking',
-            return_value=(MagicMock(), 2)
+            "aoutools.prs._calculator._prepare_weights_for_chunking",
+            return_value=(MagicMock(), 2),
         )
         mock_process_chunks = mocker.patch(
-            'aoutools.prs._calculator._process_chunks',
-            return_value=[MagicMock()]
+            "aoutools.prs._calculator._process_chunks",
+            return_value=[MagicMock()],
         )
         mock_agg_export = mocker.patch(
-            'aoutools.prs._calculator._aggregate_and_export'
+            "aoutools.prs._calculator._aggregate_and_export"
         )
 
         # Act: Call the main function
         calculate_prs(
             weights_table=MagicMock(),
             vds=MagicMock(),
-            output_path='gs://fake/path.tsv',
-            config=PRSConfig()
+            output_path="gs://fake/path.tsv",
+            config=PRSConfig(),
         )
 
         # Assert: Check that each major step was called once
@@ -85,7 +86,7 @@ class TestCalculatePRS:
             calculate_prs(
                 weights_table=MagicMock(),
                 vds=MagicMock(),
-                output_path='/local/path.tsv'  # Not a 'gs://' path
+                output_path="/local/path.tsv",  # Not a 'gs://' path
             )
 
 
@@ -111,10 +112,10 @@ class TestChunkProcessing:
         """
         # Arrange: Mock the internal preparation functions
         mock_prepare_split = mocker.patch(
-            'aoutools.prs._calculator._prepare_mt_split'
+            "aoutools.prs._calculator._prepare_mt_split"
         )
         mock_prepare_non_split = mocker.patch(
-            'aoutools.prs._calculator._prepare_mt_non_split'
+            "aoutools.prs._calculator._prepare_mt_non_split"
         )
 
         # Create a mock MatrixTable to be returned by the prep function
@@ -140,10 +141,10 @@ class TestChunkProcessing:
         """
         # Arrange
         mock_prepare_split = mocker.patch(
-            'aoutools.prs._calculator._prepare_mt_split'
+            "aoutools.prs._calculator._prepare_mt_split"
         )
         mock_prepare_non_split = mocker.patch(
-            'aoutools.prs._calculator._prepare_mt_non_split'
+            "aoutools.prs._calculator._prepare_mt_non_split"
         )
         mock_mt = self._get_mock_mt()
         mock_prepare_non_split.return_value = mock_mt

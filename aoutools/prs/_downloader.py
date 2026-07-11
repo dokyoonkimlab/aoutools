@@ -77,11 +77,13 @@ def _get_pgscatalog_version(bin_dir: Path) -> str | None:
         return None
     return None
 
+
 def _pgscatalog_constraint(min_version: str) -> str:
     """Return the version constraint string for pgscatalog.core."""
     if sys.version_info < (3, 11):
         return f"pgscatalog.core>={min_version},<1.0.2"
     return f"pgscatalog.core>={min_version}"
+
 
 def _ensure_pgscatalog_download(min_version: str = "1.0.1") -> Path:
     """
@@ -107,7 +109,7 @@ def _ensure_pgscatalog_download(min_version: str = "1.0.1") -> Path:
         if not bin_dir.exists() or not (bin_dir / "pip").exists():
             logger.info(
                 "Creating isolated environment for pgscatalog.core >= %s",
-                min_version
+                min_version,
             )
             bin_dir = _create_env()
 
@@ -115,25 +117,29 @@ def _ensure_pgscatalog_download(min_version: str = "1.0.1") -> Path:
 
         if installed_version is None:
             logger.info("Installing pgscatalog.core >= %s", min_version)
-            _run([
-                bin_dir / "pip",
-                "install",
-                "--no-user",
-                _pgscatalog_constraint(min_version)
-            ])
+            _run(
+                [
+                    bin_dir / "pip",
+                    "install",
+                    "--no-user",
+                    _pgscatalog_constraint(min_version),
+                ]
+            )
         elif Version(installed_version) < Version(min_version):
             logger.info(
                 "Upgrading pgscatalog.core to >= %s (current: %s)",
                 min_version,
                 installed_version,
             )
-            _run([
-                bin_dir / "pip",
-                "install",
-                "--no-user",
-                "--upgrade",
-                _pgscatalog_constraint(min_version)
-            ])
+            _run(
+                [
+                    bin_dir / "pip",
+                    "install",
+                    "--no-user",
+                    "--upgrade",
+                    _pgscatalog_constraint(min_version),
+                ]
+            )
 
         _cached_cli_path = cli_path
         return cli_path
@@ -274,8 +280,7 @@ def download_pgs(
     if outdir_str.startswith("gs://"):
         with tempfile.TemporaryDirectory() as temp_dir:
             logger.info(
-                "Downloading scoring files to temporary directory: %s",
-                temp_dir
+                "Downloading scoring files to temporary directory: %s", temp_dir
             )
             _run_pgscatalog_download(temp_dir, *cli_args)
 
@@ -321,7 +326,7 @@ def download_pgs(
 
         logger.info(
             "Downloading scoring files directly to local directory: %s",
-            local_path
+            local_path,
         )
         _run_pgscatalog_download(local_path, *cli_args)
         logger.info("Download to local directory complete.")

@@ -23,9 +23,7 @@ logger = logging.getLogger(__name__)
 
 
 def _prepare_mt_split(
-    vds: hl.vds.VariantDataset,
-    weights_table: hl.Table,
-    config: PRSConfig
+    vds: hl.vds.VariantDataset, weights_table: hl.Table, config: PRSConfig
 ) -> hl.MatrixTable:
     """
     Prepares a MatrixTable for the split-multi PRS calculation path.
@@ -59,14 +57,12 @@ def _prepare_mt_split(
     """
     with _log_timing(
         "Planning: Splitting multi-allelic variants and joining",
-        config.detailed_timings
+        config.detailed_timings,
     ):
         mt = hl.vds.split_multi(vds).variant_data
 
         weights_ht_processed = _orient_weights_for_split(weights_table, config)
-        mt = mt.annotate_rows(
-            weights_info=weights_ht_processed[mt.row_key]
-        )
+        mt = mt.annotate_rows(weights_info=weights_ht_processed[mt.row_key])
 
         mt = mt.filter_rows(hl.is_defined(mt.weights_info))
 
@@ -83,9 +79,7 @@ def _prepare_mt_split(
 
 
 def _prepare_mt_non_split(
-    vds: hl.vds.VariantDataset,
-    weights_table: hl.Table,
-    config: PRSConfig
+    vds: hl.vds.VariantDataset, weights_table: hl.Table, config: PRSConfig
 ) -> hl.MatrixTable:
     """
     Prepares a MatrixTable for the non-split PRS calculation path.
@@ -125,8 +119,7 @@ def _prepare_mt_non_split(
 
     if config.strict_allele_match:
         with _log_timing(
-                "Planning: Performing strict allele match",
-                config.detailed_timings
+            "Planning: Performing strict allele match", config.detailed_timings
         ):
             is_valid_pair = _check_allele_match(mt, mt.weights_info)
             mt = mt.filter_rows(is_valid_pair)
@@ -141,9 +134,7 @@ def _prepare_mt_non_split(
 
 
 def _calculate_prs_chunk(
-    weights_table: hl.Table,
-    vds: hl.vds.VariantDataset,
-    config: PRSConfig
+    weights_table: hl.Table, vds: hl.vds.VariantDataset, config: PRSConfig
 ) -> hl.Table:
     """
     Calculates a Polygenic Risk Score (PRS) for a single chunk of variants.
@@ -192,7 +183,7 @@ def _calculate_prs_chunk(
 
     if config.include_n_matched:
         with _log_timing(
-                "Computing shared variants count", config.detailed_timings
+            "Computing shared variants count", config.detailed_timings
         ):
             # Using hl.agg.count() within the `select_cols` block won't work
             # since homozygous reference are set to missing while `agg.count`
@@ -204,7 +195,7 @@ def _calculate_prs_chunk(
             prs_table = prs_table.annotate(n_matched=n_matched)
 
     # Rename sample ID column to user-defined name
-    prs_table = prs_table.rename({'s': config.sample_id_col})
+    prs_table = prs_table.rename({"s": config.sample_id_col})
 
     # Drop all global annotations to minimize memory footprint
     return prs_table.select_globals()
@@ -214,7 +205,7 @@ def _process_chunks(
     full_weights_table: hl.Table,
     n_chunks: int,
     vds: hl.vds.VariantDataset,
-    config: PRSConfig
+    config: PRSConfig,
 ) -> list[pd.DataFrame]:
     """
     Iteratively processes each chunk of the weights table.
@@ -250,9 +241,7 @@ def _process_chunks(
     partial_dfs = []
     for i in range(n_chunks):
         # Always show chunk processing time to track progress
-        with _log_timing(
-            f"Processing chunk {i + 1}/{n_chunks}", True
-        ):
+        with _log_timing(f"Processing chunk {i + 1}/{n_chunks}", True):
             # Use .persist() to avoid recomputation of the same chunk in
             # _calculate_prs_chunk, specifically during:
             # 1. Creation of interval_ht
@@ -269,9 +258,7 @@ def _process_chunks(
             )
 
             chunk_prs_table = _calculate_prs_chunk(
-                weights_table=weights_chunk,
-                vds=vds_chunk,
-                config=config
+                weights_table=weights_chunk, vds=vds_chunk, config=config
             )
 
             # Convert the per-chunk Hail Table to a Pandas DataFrame.
@@ -281,9 +268,7 @@ def _process_chunks(
 
 
 def _aggregate_and_export(
-    partial_dfs: list[pd.DataFrame],
-    output_path: str,
-    config: PRSConfig
+    partial_dfs: list[pd.DataFrame], output_path: str, config: PRSConfig
 ) -> None:
     """
     Aggregates partial Pandas DataFrame results and exports the final result.
@@ -319,23 +304,23 @@ def _aggregate_and_export(
         return
 
     with _log_timing(
-            "Aggregating results with Pandas", config.detailed_timings
+        "Aggregating results with Pandas", config.detailed_timings
     ):
         combined_df = pd.concat(partial_dfs, ignore_index=True)
         final_df = combined_df.groupby(config.sample_id_col).sum()
 
     with _log_timing(
-            f"Exporting final result to {output_path}", config.detailed_timings
+        f"Exporting final result to {output_path}", config.detailed_timings
     ):
-        with hfs.open(output_path, 'w') as f:
-            final_df.to_csv(f, sep=',', index=True, header=True)
+        with hfs.open(output_path, "w") as f:
+            final_df.to_csv(f, sep=",", index=True, header=True)
 
 
 def calculate_prs(
     weights_table: hl.Table,
     vds: hl.vds.VariantDataset,
     output_path: str,
-    config: PRSConfig | None = None
+    config: PRSConfig | None = None,
 ) -> str | None:
     """
     Calculates a Polygenic Risk Score (PRS) and exports the result to a file.
@@ -416,7 +401,7 @@ def calculate_prs(
 
     timer = SimpleTimer()
     with timer:
-        if not output_path.startswith('gs://'):
+        if not output_path.startswith("gs://"):
             raise ValueError(
                 "The 'output_path' must be a Google Cloud Storage (GCS) "
                 "path, starting with 'gs://'."
@@ -430,7 +415,7 @@ def calculate_prs(
         if config.samples_to_keep is not None:
             with _log_timing(
                 "Planning: Filtering to specified samples",
-                config.detailed_timings
+                config.detailed_timings,
             ):
                 samples_ht = _prepare_samples_to_keep(config.samples_to_keep)
                 vds = hl.vds.filter_samples(vds, samples_ht)

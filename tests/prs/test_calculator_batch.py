@@ -4,6 +4,7 @@ Unit tests for the `_calculator_batch.py` submodule.
 These tests use mocking to isolate the batch calculation workflow from any
 real Hail/Spark or GCS dependencies.
 """
+
 from unittest.mock import MagicMock
 
 import pytest
@@ -22,21 +23,21 @@ def mock_batch_dependencies(mocker):
     A fixture to mock all external dependencies for the batch calculator tests.
     """
     # Mock entire libraries
-    mocker.patch('aoutools.prs._calculator_batch.hl', MagicMock())
-    mocker.patch('aoutools.prs._calculator_batch.hfs', MagicMock())
-    mocker.patch('aoutools.prs._calculator_batch.pd', MagicMock())
+    mocker.patch("aoutools.prs._calculator_batch.hl", MagicMock())
+    mocker.patch("aoutools.prs._calculator_batch.hfs", MagicMock())
+    mocker.patch("aoutools.prs._calculator_batch.pd", MagicMock())
 
     # Mock all imported helper functions to test orchestration
-    mocker.patch('aoutools.prs._calculator_batch._prepare_samples_to_keep')
+    mocker.patch("aoutools.prs._calculator_batch._prepare_samples_to_keep")
     mocker.patch(
-        'aoutools.prs._calculator_batch._prepare_weights_for_chunking',
-        return_value=(MagicMock(), 2)
+        "aoutools.prs._calculator_batch._prepare_weights_for_chunking",
+        return_value=(MagicMock(), 2),
     )
     mocker.patch(
-        'aoutools.prs._calculator_batch._process_chunks_batch',
-        return_value=[MagicMock()]
+        "aoutools.prs._calculator_batch._process_chunks_batch",
+        return_value=[MagicMock()],
     )
-    mocker.patch('aoutools.prs._calculator_batch._aggregate_and_export_batch')
+    mocker.patch("aoutools.prs._calculator_batch._aggregate_and_export_batch")
 
 
 class TestCalculatePRSBatch:
@@ -53,27 +54,27 @@ class TestCalculatePRSBatch:
         """
         # Arrange: Mock the main helper functions to assert their calls
         mock_prep_batch_weights = mocker.patch(
-            'aoutools.prs._calculator_batch._prepare_batch_weights_data',
-            return_value=(MagicMock(), MagicMock())
+            "aoutools.prs._calculator_batch._prepare_batch_weights_data",
+            return_value=(MagicMock(), MagicMock()),
         )
         mock_prep_chunking = mocker.patch(
-            'aoutools.prs._calculator_batch._prepare_weights_for_chunking',
-            return_value=(MagicMock(), 2)
+            "aoutools.prs._calculator_batch._prepare_weights_for_chunking",
+            return_value=(MagicMock(), 2),
         )
         mock_process_chunks = mocker.patch(
-            'aoutools.prs._calculator_batch._process_chunks_batch',
-            return_value=[MagicMock()]
+            "aoutools.prs._calculator_batch._process_chunks_batch",
+            return_value=[MagicMock()],
         )
         mock_agg_export = mocker.patch(
-            'aoutools.prs._calculator_batch._aggregate_and_export_batch'
+            "aoutools.prs._calculator_batch._aggregate_and_export_batch"
         )
 
         # Act: Call the main function
         calculate_prs_batch(
-            weights_tables_map={'score1': MagicMock()},
+            weights_tables_map={"score1": MagicMock()},
             vds=MagicMock(),
-            output_path='gs://fake/path.tsv',
-            config=PRSConfig()
+            output_path="gs://fake/path.tsv",
+            config=PRSConfig(),
         )
 
         # Assert: Check that each major step was called once
@@ -89,18 +90,18 @@ class TestCalculatePRSBatch:
         """
         # Arrange: Make the prep function return None for loci_to_keep
         mocker.patch(
-            'aoutools.prs._calculator_batch._prepare_batch_weights_data',
-            return_value=(MagicMock(), None)
+            "aoutools.prs._calculator_batch._prepare_batch_weights_data",
+            return_value=(MagicMock(), None),
         )
         mock_process_chunks = mocker.patch(
-            'aoutools.prs._calculator_batch._process_chunks_batch'
+            "aoutools.prs._calculator_batch._process_chunks_batch"
         )
 
         # Act
         result = calculate_prs_batch(
-            weights_tables_map={'score1': MagicMock()},
+            weights_tables_map={"score1": MagicMock()},
             vds=MagicMock(),
-            output_path='gs://fake/path.tsv'
+            output_path="gs://fake/path.tsv",
         )
 
         # Assert
@@ -119,18 +120,18 @@ class TestBatchHelpers:
         creates a union of loci.
         """
         # Arrange
-        mock_hl = mocker.patch('aoutools.prs._calculator_batch.hl', MagicMock())
+        mock_hl = mocker.patch("aoutools.prs._calculator_batch.hl", MagicMock())
         mock_validate = mocker.patch(
-            'aoutools.prs._calculator_batch._validate_and_prepare_weights_table',
-            side_effect=lambda weights_table, config: weights_table
+            "aoutools.prs._calculator_batch._validate_and_prepare_weights_table",
+            side_effect=lambda weights_table, config: weights_table,
         )
         mock_orient = mocker.patch(
-            'aoutools.prs._calculator_batch._orient_weights_for_split',
-            side_effect=lambda ht, config: ht
+            "aoutools.prs._calculator_batch._orient_weights_for_split",
+            side_effect=lambda ht, config: ht,
         )
 
         # Act
-        weights_map = {'s1': MagicMock(), 's2': MagicMock()}
+        weights_map = {"s1": MagicMock(), "s2": MagicMock()}
         _prepare_batch_weights_data(weights_map, PRSConfig(split_multi=True))
 
         # Assert
@@ -144,14 +145,14 @@ class TestBatchHelpers:
         aggregators for each score.
         """
         # Arrange
-        mocker.patch('aoutools.prs._calculator_batch.hl', MagicMock())
+        mocker.patch("aoutools.prs._calculator_batch.hl", MagicMock())
         mock_build_rows = mocker.patch(
-            'aoutools.prs._calculator_batch._build_row_annotations',
-            return_value={'anno1': MagicMock()}
+            "aoutools.prs._calculator_batch._build_row_annotations",
+            return_value={"anno1": MagicMock()},
         )
         mock_build_agg = mocker.patch(
-            'aoutools.prs._calculator_batch._build_prs_agg_expr',
-            return_value=MagicMock()
+            "aoutools.prs._calculator_batch._build_prs_agg_expr",
+            return_value=MagicMock(),
         )
         mock_vds = MagicMock()
         mock_mt = mock_vds.variant_data
@@ -163,12 +164,12 @@ class TestBatchHelpers:
         mock_mt.select_cols().cols().select_globals.return_value = "FinalTable"
 
         # Act
-        weights_map = {'score1': MagicMock(), 'score2': MagicMock()}
+        weights_map = {"score1": MagicMock(), "score2": MagicMock()}
         result = _calculate_prs_chunk_batch(
             vds=mock_vds,
             weights_tables_map=weights_map,
             prepared_weights=MagicMock(),
-            config=PRSConfig(split_multi=False)
+            config=PRSConfig(split_multi=False),
         )
 
         # Assert

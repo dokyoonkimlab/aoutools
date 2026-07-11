@@ -27,6 +27,7 @@ class SimpleTimer:
     >>> print(f"Operation took {timer.duration:.2f} seconds.")
     Operation took 1.00 seconds.
     """
+
     def __init__(self):
         self.start: float = 0.0
         self.end: float = 0.0

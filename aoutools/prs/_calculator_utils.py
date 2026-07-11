@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 def _prepare_samples_to_keep(
-    samples: hl.Table | list | set | tuple | int | float | str
+    samples: hl.Table | list | set | tuple | int | float | str,
 ) -> hl.Table:
     """
     Converts a flexible list of samples into a keyed Hail Table.
@@ -58,14 +58,13 @@ def _prepare_samples_to_keep(
         )
 
     samples_ht = hl.Table.parallelize(
-        [{'s': s} for s in sample_list], hl.tstruct(s=hl.tstr)
+        [{"s": s} for s in sample_list], hl.tstruct(s=hl.tstr)
     )
-    return samples_ht.key_by('s')
+    return samples_ht.key_by("s")
 
 
 def _validate_and_prepare_weights_table(
-    weights_table: hl.Table,
-    config: PRSConfig
+    weights_table: hl.Table, config: PRSConfig
 ) -> hl.Table:
     """
     Validates and prepares a single weights table for PRS calculation.
@@ -103,14 +102,14 @@ def _validate_and_prepare_weights_table(
             f"Specified weight column '{config.weight_col_name}' not found "
             f"in table."
         )
-    weights_table = weights_table.rename({config.weight_col_name: 'weight'})
+    weights_table = weights_table.rename({config.weight_col_name: "weight"})
 
     required_cols = {
-        'chr': hl.tstr,
-        'pos': hl.tint32,
-        'effect_allele': hl.tstr,
-        'noneffect_allele': hl.tstr,
-        'weight': hl.tfloat64,
+        "chr": hl.tstr,
+        "pos": hl.tint32,
+        "effect_allele": hl.tstr,
+        "noneffect_allele": hl.tstr,
+        "weight": hl.tfloat64,
     }
     for col, expected_type in required_cols.items():
         if col not in weights_table.row:
@@ -129,19 +128,14 @@ def _validate_and_prepare_weights_table(
 
     weights_table = weights_table.annotate(
         locus=hl.locus(
-            weights_table.chr,
-            weights_table.pos,
-            reference_genome='GRCh38'
+            weights_table.chr, weights_table.pos, reference_genome="GRCh38"
         )
     )
-    weights_table = weights_table.key_by('locus')
-    return weights_table.select('effect_allele', 'noneffect_allele', 'weight')
+    weights_table = weights_table.key_by("locus")
+    return weights_table.select("effect_allele", "noneffect_allele", "weight")
 
 
-def _orient_weights_for_split(
-    ht: hl.Table,
-    config: PRSConfig
-) -> hl.Table:
+def _orient_weights_for_split(ht: hl.Table, config: PRSConfig) -> hl.Table:
     """
     Orients alleles and weights for a split-multi join.
 
@@ -174,19 +168,14 @@ def _orient_weights_for_split(
         alleles=hl.if_else(
             config.ref_is_effect_allele,
             [ht.effect_allele, ht.noneffect_allele],
-            [ht.noneffect_allele, ht.effect_allele]
+            [ht.noneffect_allele, ht.effect_allele],
         ),
-        weight=hl.if_else(
-            config.ref_is_effect_allele,
-            -ht.weight,
-            ht.weight
-        )
-    ).key_by('locus', 'alleles')
+        weight=hl.if_else(config.ref_is_effect_allele, -ht.weight, ht.weight),
+    ).key_by("locus", "alleles")
 
 
 def _check_allele_match(
-    mt: hl.MatrixTable,
-    weights_info: hl.expr.StructExpression
+    mt: hl.MatrixTable, weights_info: hl.expr.StructExpression
 ) -> hl.expr.BooleanExpression:
     """
     Returns a boolean expression indicating a strict allele match.
@@ -216,16 +205,14 @@ def _check_allele_match(
     noneffect = weights_info.noneffect_allele
 
     is_valid_pair = (
-        ((effect == ref_allele) & alt_alleles.contains(noneffect)) |
-        ((noneffect == ref_allele) & alt_alleles.contains(effect))
-    )
+        (effect == ref_allele) & alt_alleles.contains(noneffect)
+    ) | ((noneffect == ref_allele) & alt_alleles.contains(effect))
 
     return is_valid_pair
 
 
 def _calculate_dosage(
-    mt: hl.MatrixTable,
-    score_name: str = ''
+    mt: hl.MatrixTable, score_name: str = ""
 ) -> hl.expr.Int32Expression:
     """
     Calculates dosage of effect allele.
@@ -248,21 +235,21 @@ def _calculate_dosage(
         An expression for the effect allele dosage.
     """
     weights_field_name = (
-        f'weights_info_{score_name}' if score_name else 'weights_info'
+        f"weights_info_{score_name}" if score_name else "weights_info"
     )
     effect_allele = mt[weights_field_name].effect_allele
     ref_is_effect = effect_allele == mt.alleles[0]
 
     # Check for 'GT' field to handle different VDS versions by their
     # genotype encoding scheme.
-    if 'GT' in mt.entry:
+    if "GT" in mt.entry:
         # Global-indexed format: 'GT' contains indices that refer
         # directly to the global 'alleles' array.
         # Example: if GT is [0, 1] and mt.alleles is ['A', 'G', 'T'],
         # this expression reconstructs the sample's alleles as ['A', 'G'].
         alleles_expr = hl.or_missing(
             hl.is_defined(mt.GT),
-            hl.array([mt.alleles[mt.GT[0]], mt.alleles[mt.GT[1]]])
+            hl.array([mt.alleles[mt.GT[0]], mt.alleles[mt.GT[1]]]),
         )
     else:
         # Local-indexed format: 'LGT' indices refer to the 'LA'
@@ -273,28 +260,30 @@ def _calculate_dosage(
         # The reconstructed alleles are ['A', 'G'].
         alleles_expr = hl.or_missing(
             hl.is_defined(mt.LGT) & hl.is_defined(mt.LA),
-            hl.array([
-                mt.alleles[hl.or_else(mt.LA[mt.LGT[0]], 0)],
-                mt.alleles[hl.or_else(mt.LA[mt.LGT[1]], 0)]
-            ])
+            hl.array(
+                [
+                    mt.alleles[hl.or_else(mt.LA[mt.LGT[0]], 0)],
+                    mt.alleles[hl.or_else(mt.LA[mt.LGT[1]], 0)],
+                ]
+            ),
         )
 
     # The hl.case statement cleanly handles missing genotypes by assuming
     # they are homozygous reference.
-    return hl.case() \
-        .when(hl.is_missing(alleles_expr) & ref_is_effect, 2) \
-        .when(hl.is_missing(alleles_expr) & ~ref_is_effect, 0) \
+    return (
+        hl.case()
+        .when(hl.is_missing(alleles_expr) & ref_is_effect, 2)
+        .when(hl.is_missing(alleles_expr) & ~ref_is_effect, 0)
         .default(
-            hl.or_else(alleles_expr, hl.empty_array(hl.tstr)).filter(
-                lambda allele: allele == effect_allele
-            ).length()
+            hl.or_else(alleles_expr, hl.empty_array(hl.tstr))
+            .filter(lambda allele: allele == effect_allele)
+            .length()
         )
+    )
 
 
 def _prepare_weights_for_chunking(
-    weights_table: hl.Table,
-    config: PRSConfig,
-    validate_table: bool = True
+    weights_table: hl.Table, config: PRSConfig, validate_table: bool = True
 ) -> tuple[hl.Table, int]:
     """
     Prepares and annotates a weights table for chunked processing.
@@ -336,8 +325,7 @@ def _prepare_weights_for_chunking(
     ):
         if validate_table:
             weights_table = _validate_and_prepare_weights_table(
-                weights_table=weights_table,
-                config=config
+                weights_table=weights_table, config=config
             )
 
         total_variants = weights_table.count()
@@ -356,9 +344,7 @@ def _prepare_weights_for_chunking(
         # the idx at the annotation step due to lazy eval.
         weights_table = weights_table.add_index()
         weights_table = weights_table.annotate(
-            chunk_id=hl.int(
-                weights_table.idx / effective_chunk_size
-            )
+            chunk_id=hl.int(weights_table.idx / effective_chunk_size)
         )
         # Note: add_index() preserves existing keys (e.g., locus),
         # so no need to re-key explicitly
@@ -366,9 +352,7 @@ def _prepare_weights_for_chunking(
         return weights_table, n_chunks
 
 
-def _create_1bp_intervals(
-    table_chunk: hl.Table
-) -> hl.Table:
+def _create_1bp_intervals(table_chunk: hl.Table) -> hl.Table:
     """
     Creates a table of 1-base-pair (1-bp) intervals from a Hail Table keyed by
     locus.
@@ -391,4 +375,4 @@ def _create_1bp_intervals(
         interval=hl.interval(
             table_chunk.locus, table_chunk.locus, includes_end=True
         )
-    ).key_by('interval')
+    ).key_by("interval")

@@ -6,10 +6,10 @@
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
-project = 'aoutools'
-copyright = '2025, Jaehyun Joo'
-author = 'Jaehyun Joo'
-release = '0.1.0'
+project = "aoutools"
+copyright = "2025, Jaehyun Joo"
+author = "Jaehyun Joo"
+release = "0.1.0"
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
@@ -17,33 +17,32 @@ release = '0.1.0'
 import os
 import sys
 
-sys.path.insert(0, os.path.abspath('../..'))
+sys.path.insert(0, os.path.abspath("../.."))
 # Mock heavy imports for autodoc to avoid installing large/system-specific
 # packages
 autodoc_mock_imports = [
     "hail",
     "hailtop",
-    "google.cloud",   # if you don't want to install GCP libs in RTD
-    "pgscatalog.core" # could also be mocked if you don't want to install it
+    "google.cloud",  # if you don't want to install GCP libs in RTD
+    "pgscatalog.core",  # could also be mocked if you don't want to install it
 ]
 extensions = [
-    'sphinx.ext.autodoc',       # Pulls documentation from docstrings.
-    'sphinx.ext.napoleon',      # Understands Google-style docstrings.
-    'sphinx_autodoc_typehints', # Renders type hints nicely.
-    'sphinx.ext.viewcode',      # Adds links to your source code.
+    "sphinx.ext.autodoc",  # Pulls documentation from docstrings.
+    "sphinx.ext.napoleon",  # Understands Google-style docstrings.
+    "sphinx_autodoc_typehints",  # Renders type hints nicely.
+    "sphinx.ext.viewcode",  # Adds links to your source code.
 ]
 
-templates_path = ['_templates']
+templates_path = ["_templates"]
 exclude_patterns = []
 
 
 # -- Options for HTML output -------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output
 
-html_theme = 'furo'
-html_static_path = ['_static']
+html_theme = "furo"
+html_static_path = ["_static"]
 html_css_files = [
-    'custom.css',
+    "custom.css",
 ]
 html_title = "aoutools"
-

@@ -58,13 +58,10 @@ def _prepare_batch_weights_data(
     """
     prepared_weights = {}
     all_loci_tables = []
-    with _log_timing(
-        "Preparing all weights tables", config.detailed_timings
-    ):
+    with _log_timing("Preparing all weights tables", config.detailed_timings):
         for score_name, weights_table in weights_tables_map.items():
             prepared_table = _validate_and_prepare_weights_table(
-                weights_table=weights_table,
-                config=config
+                weights_table=weights_table, config=config
             )
             prepared_weights[score_name] = prepared_table
             all_loci_tables.append(prepared_table.select())
@@ -78,15 +75,16 @@ def _prepare_batch_weights_data(
         final_prepared_weights = {}
         with _log_timing(
             "Re-keying weights tables for split-multi join",
-            config.detailed_timings
+            config.detailed_timings,
         ):
             for score_name, ht in prepared_weights.items():
-                final_prepared_weights[score_name] = \
-                    _orient_weights_for_split(ht, config)
+                final_prepared_weights[score_name] = _orient_weights_for_split(
+                    ht, config
+                )
     else:
         final_prepared_weights = prepared_weights
 
-    loci_to_keep = hl.Table.union(*all_loci_tables).key_by('locus').distinct()
+    loci_to_keep = hl.Table.union(*all_loci_tables).key_by("locus").distinct()
     return final_prepared_weights, loci_to_keep
 
 
@@ -143,8 +141,8 @@ def _build_row_annotations(
         if not config.split_multi and config.strict_allele_match:
             is_valid_expr &= _check_allele_match(mt, weights_info_expr)
 
-        annotations[f'weights_info_{score_name}'] = weights_info_expr
-        annotations[f'is_valid_{score_name}'] = is_valid_expr
+        annotations[f"weights_info_{score_name}"] = weights_info_expr
+        annotations[f"is_valid_{score_name}"] = is_valid_expr
     return annotations
 
 
@@ -189,8 +187,8 @@ def _build_prs_agg_expr(
     --------
     PRSConfig : A configuration class that holds parameters for PRS calculation.
     """
-    weights_info = mt[f'weights_info_{score_name}']
-    is_valid = mt[f'is_valid_{score_name}']
+    weights_info = mt[f"weights_info_{score_name}"]
+    is_valid = mt[f"is_valid_{score_name}"]
 
     # Use appropriate dosage calculation based on whether VDS is split
     if config.split_multi:
@@ -247,8 +245,8 @@ def _calculate_prs_chunk_batch(
     # Step 1: Get MatrixTable from VDS, optionally splitting multi-allelics
     if config.split_multi:
         with _log_timing(
-                "Planning: Splitting multi-allelic variants",
-                config.detailed_timings
+            "Planning: Splitting multi-allelic variants",
+            config.detailed_timings,
         ):
             mt = hl.vds.split_multi(vds).variant_data
             mt_key = mt.row_key
@@ -259,7 +257,7 @@ def _calculate_prs_chunk_batch(
     # Step 2: Annotate MatrixTable rows with weights info and validity masks
     with _log_timing(
         "Planning: Calculating and aggregating PRS scores",
-        config.detailed_timings
+        config.detailed_timings,
     ):
         row_annotations = _build_row_annotations(
             mt, mt_key, weights_tables_map, prepared_weights, config
@@ -279,11 +277,11 @@ def _calculate_prs_chunk_batch(
     # requested
     if config.include_n_matched:
         with _log_timing(
-                "Computing shared variants count", config.detailed_timings
+            "Computing shared variants count", config.detailed_timings
         ):
             n_matched_aggs = {
-                f'n_matched_{score_name}': hl.agg.count_where(
-                    mt[f'is_valid_{score_name}']
+                f"n_matched_{score_name}": hl.agg.count_where(
+                    mt[f"is_valid_{score_name}"]
                 )
                 for score_name in weights_tables_map
             }
@@ -294,8 +292,8 @@ def _calculate_prs_chunk_batch(
 
 
 def _process_chunks_batch(
-    #pylint: disable=too-many-arguments
-    #pylint: disable=too-many-positional-arguments
+    # pylint: disable=too-many-arguments
+    # pylint: disable=too-many-positional-arguments
     n_chunks: int,
     chunked_loci: hl.Table,
     vds: hl.vds.VariantDataset,
@@ -341,9 +339,7 @@ def _process_chunks_batch(
     partial_dfs = []
     for i in range(n_chunks):
         # Always show chunk processing time to track progress
-        with _log_timing(
-            f"Processing chunk {i + 1}/{n_chunks}", True
-        ):
+        with _log_timing(f"Processing chunk {i + 1}/{n_chunks}", True):
             loci_chunk = chunked_loci.filter(
                 chunked_loci.chunk_id == i
             ).persist()
@@ -364,23 +360,18 @@ def _process_chunks_batch(
             }
 
             chunk_prs_table = _calculate_prs_chunk_batch(
-                vds_chunk,
-                weights_tables_map,
-                chunked_prepared_weights,
-                config
+                vds_chunk, weights_tables_map, chunked_prepared_weights, config
             )
 
             chunk_prs_table = chunk_prs_table.rename(
-                {'s': config.sample_id_col}
+                {"s": config.sample_id_col}
             )
             partial_dfs.append(chunk_prs_table.to_pandas())
     return partial_dfs
 
 
 def _aggregate_and_export_batch(
-    partial_dfs: list[pd.DataFrame],
-    output_path: str,
-    config: PRSConfig
+    partial_dfs: list[pd.DataFrame], output_path: str, config: PRSConfig
 ) -> None:
     """
     Aggregates partial PRS results from all chunks and exports to disk.
@@ -414,16 +405,16 @@ def _aggregate_and_export_batch(
         return
 
     with _log_timing(
-            "Aggregating batch results with Pandas", config.detailed_timings
+        "Aggregating batch results with Pandas", config.detailed_timings
     ):
         combined_df = pd.concat(partial_dfs, ignore_index=True)
         final_df = combined_df.groupby(config.sample_id_col).sum()
 
     with _log_timing(
-            f"Exporting final result to {output_path}", config.detailed_timings
+        f"Exporting final result to {output_path}", config.detailed_timings
     ):
-        with hfs.open(output_path, 'w') as f:
-            final_df.to_csv(f, sep=',', index=True, header=True)
+        with hfs.open(output_path, "w") as f:
+            final_df.to_csv(f, sep=",", index=True, header=True)
 
 
 def calculate_prs_batch(
@@ -478,7 +469,7 @@ def calculate_prs_batch(
 
     timer = SimpleTimer()
     with timer:
-        if not output_path.startswith('gs://'):
+        if not output_path.startswith("gs://"):
             raise ValueError(
                 "The 'output_path' must be a Google Cloud Storage (GCS) "
                 "path, starting with 'gs://'."
@@ -497,25 +488,20 @@ def calculate_prs_batch(
                 vds = hl.vds.filter_samples(vds, samples_ht)
 
         # Step 1: Prepare all weights data and get unique loci
-        prepared_weights, loci_to_keep = \
-            _prepare_batch_weights_data(weights_tables_map, config)
+        prepared_weights, loci_to_keep = _prepare_batch_weights_data(
+            weights_tables_map, config
+        )
 
         if loci_to_keep is None:
-            logger.warning(
-                "No variants found in any weights table. Aborting."
-            )
+            logger.warning("No variants found in any weights table. Aborting.")
             return None
 
         # Step 2: Prepare loci for chunked processing
         count = loci_to_keep.count()
-        logger.info(
-            "Found %d total unique variants across all scores.", count
-        )
+        logger.info("Found %d total unique variants across all scores.", count)
 
         chunked_loci, n_chunks = _prepare_weights_for_chunking(
-            weights_table=loci_to_keep,
-            config=config,
-            validate_table=False
+            weights_table=loci_to_keep, config=config, validate_table=False
         )
 
         # Step 3: Process all chunks using the new helper function
@@ -530,13 +516,11 @@ def calculate_prs_batch(
 
         # Step 4: Aggregate and export final results
         _aggregate_and_export_batch(
-            partial_dfs=partial_dfs,
-            output_path=output_path,
-            config=config
+            partial_dfs=partial_dfs, output_path=output_path, config=config
         )
 
     logger.info(
         "Batch PRS calculation complete. Total time: %.2f seconds.",
-        timer.duration
+        timer.duration,
     )
     return output_path if partial_dfs else None

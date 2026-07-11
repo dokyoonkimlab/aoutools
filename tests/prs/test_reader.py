@@ -4,6 +4,7 @@ Unit tests for the `_reader.py` submodule.
 These tests use mocking to isolate the file reading and validation logic
 from any real Hail/Spark or GCS dependencies.
 """
+
 from unittest.mock import MagicMock
 
 import pytest
@@ -19,18 +20,24 @@ from aoutools.prs._reader import (
 def mock_dependencies(mocker):
     """A fixture to mock all external dependencies for the reader tests."""
     # Mock the entire hail library
-    mock_hl = mocker.patch('aoutools.prs._reader.hl', MagicMock())
+    mock_hl = mocker.patch("aoutools.prs._reader.hl", MagicMock())
 
     # Mock the hailtop file system
-    mocker.patch('aoutools.prs._reader.hfs', MagicMock())
+    mocker.patch("aoutools.prs._reader.hfs", MagicMock())
 
     # Mock the utility functions imported from other modules
-    mocker.patch('aoutools.prs._reader._stage_local_file_to_gcs',
-                 side_effect=lambda x, sub_dir: x)
-    mocker.patch('aoutools.prs._reader._standardize_chromosome_column',
-                 side_effect=lambda x: x)
-    mocker.patch('aoutools.prs._reader._process_prs_weights_table',
-                 side_effect=lambda table, file_path, validate_alleles: table)
+    mocker.patch(
+        "aoutools.prs._reader._stage_local_file_to_gcs",
+        side_effect=lambda x, sub_dir: x,
+    )
+    mocker.patch(
+        "aoutools.prs._reader._standardize_chromosome_column",
+        side_effect=lambda x: x,
+    )
+    mocker.patch(
+        "aoutools.prs._reader._process_prs_weights_table",
+        side_effect=lambda table, file_path, validate_alleles: table,
+    )
 
     return mock_hl
 
@@ -43,16 +50,17 @@ class TestReadPrsWeights:
         Tests that the header-based parser is called when header=True.
         """
         mock_header_parser = mocker.patch(
-            'aoutools.prs._reader._read_prs_weights_header'
+            "aoutools.prs._reader._read_prs_weights_header"
         )
         column_map = {
-            'chr': 'CHR', 'pos': 'POS', 'effect_allele': 'EA',
-            'noneffect_allele': 'NEA', 'weight': 'BETA'
+            "chr": "CHR",
+            "pos": "POS",
+            "effect_allele": "EA",
+            "noneffect_allele": "NEA",
+            "weight": "BETA",
         }
         read_prs_weights(
-            file_path='gs://fake/file.txt',
-            header=True,
-            column_map=column_map
+            file_path="gs://fake/file.txt", header=True, column_map=column_map
         )
         mock_header_parser.assert_called_once()
 
@@ -61,16 +69,17 @@ class TestReadPrsWeights:
         Tests that the index-based parser is called when header=False.
         """
         mock_noheader_parser = mocker.patch(
-            'aoutools.prs._reader._read_prs_weights_noheader'
+            "aoutools.prs._reader._read_prs_weights_noheader"
         )
         column_map = {
-            'chr': 1, 'pos': 2, 'effect_allele': 3,
-            'noneffect_allele': 4, 'weight': 5
+            "chr": 1,
+            "pos": 2,
+            "effect_allele": 3,
+            "noneffect_allele": 4,
+            "weight": 5,
         }
         read_prs_weights(
-            file_path='gs://fake/file.txt',
-            header=False,
-            column_map=column_map
+            file_path="gs://fake/file.txt", header=False, column_map=column_map
         )
         mock_noheader_parser.assert_called_once()
 
@@ -79,9 +88,9 @@ class TestReadPrsWeights:
         Tests that a ValueError is raised if column_map is missing
         required keys.
         """
-        bad_map = {'chr': 1, 'pos': 2}  # Missing effect_allele, etc.
+        bad_map = {"chr": 1, "pos": 2}  # Missing effect_allele, etc.
         with pytest.raises(ValueError, match="missing required keys"):
-            read_prs_weights('gs://f/f.t', header=False, column_map=bad_map)
+            read_prs_weights("gs://f/f.t", header=False, column_map=bad_map)
 
     def test_raises_error_on_mismatched_map_type(self, mock_dependencies):
         """
@@ -90,11 +99,14 @@ class TestReadPrsWeights:
         """
         # header=True expects string values, but gets an int
         bad_map = {
-            'chr': 'CHR', 'pos': 'POS', 'effect_allele': 'EA',
-            'noneffect_allele': 'NEA', 'weight': 5  # Should be a string
+            "chr": "CHR",
+            "pos": "POS",
+            "effect_allele": "EA",
+            "noneffect_allele": "NEA",
+            "weight": 5,  # Should be a string
         }
         with pytest.raises(TypeError, match="must be strs"):
-            read_prs_weights('gs://f/f.t', header=True, column_map=bad_map)
+            read_prs_weights("gs://f/f.t", header=True, column_map=bad_map)
 
 
 class TestInternalValidators:
@@ -134,7 +146,7 @@ class TestInternalValidators:
         # This is the table after filtering for duplicates
         mock_duplicates_table = MagicMock()
         mock_duplicates_table.count.return_value = 1  # > 0 means duplicates
-        mock_duplicates_table.take.return_value = [MagicMock(variant_id='dup1')]
+        mock_duplicates_table.take.return_value = [MagicMock(variant_id="dup1")]
         mock_agg_table.filter.return_value = mock_duplicates_table
 
         with pytest.raises(ValueError, match="Duplicate variants found"):

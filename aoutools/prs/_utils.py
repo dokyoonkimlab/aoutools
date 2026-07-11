@@ -35,10 +35,7 @@ def _log_timing(description: str, enabled: bool = True):
     logger.info("%s finished in %.2f seconds.", description, duration)
 
 
-def _stage_local_file_to_gcs(
-    file_path: str,
-    sub_dir: str
-) -> str:
+def _stage_local_file_to_gcs(file_path: str, sub_dir: str) -> str:
     """
     Checks if file path is local; if so, stages it to GCS.
 
@@ -68,12 +65,12 @@ def _stage_local_file_to_gcs(
     EnvironmentError
         If the `WORKSPACE_BUCKET` environment variable is not set.
     """
-    if file_path.startswith('gs://'):
+    if file_path.startswith("gs://"):
         return file_path
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"Local file does not exist: {file_path}")
 
-    workspace_bucket = os.getenv('WORKSPACE_BUCKET')
+    workspace_bucket = os.getenv("WORKSPACE_BUCKET")
     if not workspace_bucket:
         raise OSError(
             "The 'WORKSPACE_BUCKET' environment variable is not set. "
@@ -81,7 +78,7 @@ def _stage_local_file_to_gcs(
         )
 
     gcs_path = os.path.join(
-        workspace_bucket, 'data', sub_dir, os.path.basename(file_path)
+        workspace_bucket, "data", sub_dir, os.path.basename(file_path)
     )
 
     logger.info(
@@ -89,7 +86,7 @@ def _stage_local_file_to_gcs(
         file_path,
         gcs_path,
     )
-    hfs.copy(f'file://{os.path.abspath(file_path)}', gcs_path)
+    hfs.copy(f"file://{os.path.abspath(file_path)}", gcs_path)
 
     return gcs_path
 
@@ -120,5 +117,5 @@ def _standardize_chromosome_column(table: hl.Table) -> hl.Table:
     # Per-row and idempotent: already-prefixed values pass through untouched,
     # so this is safe on mixed-format columns and if applied more than once.
     return table.annotate(
-        chr=hl.if_else(chr_str.startswith('chr'), chr_str, 'chr' + chr_str)
+        chr=hl.if_else(chr_str.startswith("chr"), chr_str, "chr" + chr_str)
     )

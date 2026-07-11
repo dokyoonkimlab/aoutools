@@ -85,11 +85,11 @@ def calculate_pgs(
 
     # Define the column mapping for standard PGS Catalog scoring files
     pgs_column_map = {
-        'chr': 'hm_chr',
-        'pos': 'hm_pos',
-        'effect_allele': 'effect_allele',
-        'noneffect_allele': 'other_allele',
-        'weight': 'effect_weight',
+        "chr": "hm_chr",
+        "pos": "hm_pos",
+        "effect_allele": "effect_allele",
+        "noneffect_allele": "other_allele",
+        "weight": "effect_weight",
     }
 
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -117,7 +117,7 @@ def calculate_pgs(
 
         weights_tables_map = {}
         for file_path in downloaded_files:
-            score_name = file_path.name.split('.')[0]
+            score_name = file_path.name.split(".")[0]
             logger.info(
                 "Reading scoring file for '%s' from %s", score_name, file_path
             )
@@ -126,10 +126,10 @@ def calculate_pgs(
                     file_path=str(file_path),
                     header=True,
                     column_map=pgs_column_map,
-                    delimiter='\t',
-                    comment='#',
+                    delimiter="\t",
+                    comment="#",
                     validate_alleles=True,
-                    missing='',
+                    missing="",
                     force=True,
                 )
                 weights_tables_map[score_name] = weights_table
@@ -141,7 +141,8 @@ def calculate_pgs(
                     "scoring files may contain variants without positional "
                     "information (e.g., HLA types) or with incomplete effect "
                     "allele information, which are not supported.",
-                    score_name, e
+                    score_name,
+                    e,
                 )
 
         if not weights_tables_map:
@@ -151,7 +152,7 @@ def calculate_pgs(
         # Step 3: Calculate PRS for all scores in batch mode
         logger.info(
             "Calculating PRS for %d scores in batch mode.",
-            len(weights_tables_map)
+            len(weights_tables_map),
         )
         result_path = calculate_prs_batch(
             weights_tables_map=weights_tables_map,

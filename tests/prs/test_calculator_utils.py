@@ -4,6 +4,7 @@ Unit tests for the `_calculator_utils.py` submodule.
 These tests use mocking to isolate the functions from any real Hail/Spark
 dependencies, allowing for fast and portable execution.
 """
+
 from unittest.mock import MagicMock
 
 import pytest
@@ -28,8 +29,8 @@ class TestValidateAndPrepareWeightsTable:
         # both modules that touch the table: `_calculator_utils` (this function)
         # and `_utils` (where `_standardize_chromosome_column` lives), otherwise
         # the latter's `hl.str(...)` would hit real hail's typecheck on a mock.
-        mock_hl = mocker.patch('aoutools.prs._calculator_utils.hl', MagicMock())
-        mocker.patch('aoutools.prs._utils.hl', MagicMock())
+        mock_hl = mocker.patch("aoutools.prs._calculator_utils.hl", MagicMock())
+        mocker.patch("aoutools.prs._utils.hl", MagicMock())
 
         # Create the main mock object for the Hail Table
         mock_table = MagicMock()
@@ -49,11 +50,11 @@ class TestValidateAndPrepareWeightsTable:
         # `table['column_name']`.
         def getitem_side_effect(column_name):
             mock_col = MagicMock()
-            if column_name in ['chr', 'effect_allele', 'noneffect_allele']:
+            if column_name in ["chr", "effect_allele", "noneffect_allele"]:
                 mock_col.dtype = mock_hl.tstr
-            elif column_name == 'pos':
+            elif column_name == "pos":
                 mock_col.dtype = mock_hl.tint32
-            elif column_name == 'weight':
+            elif column_name == "weight":
                 mock_col.dtype = mock_hl.tfloat64
             return mock_col
 
@@ -67,8 +68,11 @@ class TestValidateAndPrepareWeightsTable:
         """
         # Arrange: Use the helper to create a mock table with all columns
         all_cols = {
-            'chr': None, 'pos': None, 'effect_allele': None,
-            'noneffect_allele': None, 'weight': None
+            "chr": None,
+            "pos": None,
+            "effect_allele": None,
+            "noneffect_allele": None,
+            "weight": None,
         }
         mock_weights_table = self._get_mock_table(mocker, all_cols)
 
@@ -79,7 +83,7 @@ class TestValidateAndPrepareWeightsTable:
 
         # Assert: Verify that the expected Hail methods were called
         mock_weights_table.rename.assert_called_once()
-        mock_weights_table.key_by.assert_called_with('locus')
+        mock_weights_table.key_by.assert_called_with("locus")
 
     def test_missing_required_column_raises_error(self, mocker):
         """
@@ -87,13 +91,11 @@ class TestValidateAndPrepareWeightsTable:
         """
         # Arrange: Create a mock table missing 'pos' but including 'weight'
         # to ensure we test the correct validation step.
-        cols_missing_pos = {'chr': None, 'effect_allele': None, 'weight': None}
+        cols_missing_pos = {"chr": None, "effect_allele": None, "weight": None}
         mock_weights_table = self._get_mock_table(mocker, cols_missing_pos)
 
         # Act & Assert: Check that the correct error is raised
         with pytest.raises(
             TypeError, match="Weights table is missing required column: 'pos'"
         ):
-            _validate_and_prepare_weights_table(
-                mock_weights_table, PRSConfig()
-            )
+            _validate_and_prepare_weights_table(mock_weights_table, PRSConfig())

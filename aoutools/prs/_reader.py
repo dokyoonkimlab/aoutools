@@ -15,9 +15,7 @@ from ._utils import (
 logger = logging.getLogger(__name__)
 
 
-def _validate_alleles(
-    table: hl.Table
-) -> hl.Table:
+def _validate_alleles(table: hl.Table) -> hl.Table:
     """
     Filters out rows with invalid alleles (non-ACGT characters).
 
@@ -37,12 +35,12 @@ def _validate_alleles(
     """
     logger.info("Validating allele columns for non-ACGT characters...")
 
-    dna_regex = '^[ACGT]+$'
+    dna_regex = "^[ACGT]+$"
     initial_count = table.count()
 
     table = table.filter(
-        hl.str(table.effect_allele).matches(dna_regex) &
-        hl.str(table.noneffect_allele).matches(dna_regex)
+        hl.str(table.effect_allele).matches(dna_regex)
+        & hl.str(table.noneffect_allele).matches(dna_regex)
     )
     final_count = table.count()
 
@@ -51,16 +49,13 @@ def _validate_alleles(
         logger.warning(
             "Removed %d variants with invalid alleles "
             "(non-ACGT characters found).",
-            n_removed
+            n_removed,
         )
 
     return table
 
 
-def _check_duplicated_ids(
-    table: hl.Table,
-    file_path: str = "input"
-) -> None:
+def _check_duplicated_ids(table: hl.Table, file_path: str = "input") -> None:
     """
     Checks for duplicate variants based on genomic identifiers.
 
@@ -90,13 +85,17 @@ def _check_duplicated_ids(
     )
 
     table_with_id = table.annotate(
-        variant_id=hl.str('_').join([
-            table.chr, hl.str(table.pos), table.noneffect_allele,
-            table.effect_allele
-        ])
+        variant_id=hl.str("_").join(
+            [
+                table.chr,
+                hl.str(table.pos),
+                table.noneffect_allele,
+                table.effect_allele,
+            ]
+        )
     )
 
-    id_counts_table = table_with_id.group_by('variant_id').aggregate(
+    id_counts_table = table_with_id.group_by("variant_id").aggregate(
         n=hl.agg.count()
     )
 
@@ -112,9 +111,7 @@ def _check_duplicated_ids(
 
 
 def _process_prs_weights_table(
-    table: hl.Table,
-    file_path: str,
-    validate_alleles: bool
+    table: hl.Table, file_path: str, validate_alleles: bool
 ) -> hl.Table:
     """
     Performs final filtering and validation steps on an imported weights table.
@@ -157,9 +154,7 @@ def _process_prs_weights_table(
     count_before_filter = table.count()
 
     # Filter out variants with missing or zero-effect weights
-    table = table.filter(
-        (hl.is_defined(table.weight)) & (table.weight != 0)
-    )
+    table = table.filter((hl.is_defined(table.weight)) & (table.weight != 0))
 
     # Persist the table here as we need to perform multiple actions on it
     table = table.persist()
@@ -170,7 +165,7 @@ def _process_prs_weights_table(
     if n_removed > 0:
         logger.info(
             "Removed %d variants with missing or zero-effect weights.",
-            n_removed
+            n_removed,
         )
 
     if filtered_row_count == 0:
@@ -184,21 +179,21 @@ def _process_prs_weights_table(
     logger.info(
         "Successfully loaded %d variants from %s.",
         filtered_row_count,
-        file_path
+        file_path,
     )
     return table
 
 
 def _read_prs_weights_noheader(
-    #pylint: disable=too-many-arguments
-    #pylint: disable=too-many-positional-arguments
+    # pylint: disable=too-many-arguments
+    # pylint: disable=too-many-positional-arguments
     file_path: str,
     column_map: dict,
     delimiter: str,
     comment: str | list[str],
     keep_other_cols: bool = False,
     validate_alleles: bool = False,
-    **kwargs
+    **kwargs,
 ) -> hl.Table:
     """
     Reads a weight file without a header using a column map of indices.
@@ -254,23 +249,23 @@ def _read_prs_weights_noheader(
         delimiter=delimiter,
         no_header=True,
         comment=comment,
-        **kwargs
+        **kwargs,
     )
 
     standard_cols_exprs = {
-        'chr': table[f"f{column_map['chr'] - 1}"],
-        'pos': hl.int32(table[f"f{column_map['pos'] - 1}"]),
-        'effect_allele': table[f"f{column_map['effect_allele'] - 1}"],
-        'noneffect_allele': table[f"f{column_map['noneffect_allele'] - 1}"],
-        'weight': hl.float64(table[f"f{column_map['weight'] - 1}"])
+        "chr": table[f"f{column_map['chr'] - 1}"],
+        "pos": hl.int32(table[f"f{column_map['pos'] - 1}"]),
+        "effect_allele": table[f"f{column_map['effect_allele'] - 1}"],
+        "noneffect_allele": table[f"f{column_map['noneffect_allele'] - 1}"],
+        "weight": hl.float64(table[f"f{column_map['weight'] - 1}"]),
     }
 
     other_cols_exprs = {}
     if keep_other_cols:
-        used_f_fields = {f'f{i - 1}' for i in indices}
+        used_f_fields = {f"f{i - 1}" for i in indices}
         all_f_fields = table.row_value.dtype.fields
         other_fields = [f for f in all_f_fields if f not in used_f_fields]
-        new_names = [f'non_req_col_{i+1}' for i, _ in enumerate(other_fields)]
+        new_names = [f"non_req_col_{i + 1}" for i, _ in enumerate(other_fields)]
         other_cols_exprs = {
             new: table[old]
             for new, old in zip(new_names, other_fields, strict=True)
@@ -281,15 +276,15 @@ def _read_prs_weights_noheader(
 
 
 def _read_prs_weights_header(
-    #pylint: disable=too-many-arguments
-    #pylint: disable=too-many-positional-arguments
+    # pylint: disable=too-many-arguments
+    # pylint: disable=too-many-positional-arguments
     file_path: str,
     column_map: dict,
     delimiter: str,
     comment: str | list[str],
     keep_other_cols: bool = False,
     validate_alleles: bool = False,
-    **kwargs
+    **kwargs,
 ) -> hl.Table:
     """
     Reads a weight file with a header using a column map of names.
@@ -336,10 +331,11 @@ def _read_prs_weights_header(
         raise ValueError("Duplicate column names provided in column_map.")
 
     types = {
-        column_map['chr']: hl.tstr, column_map['pos']: hl.tint32,
-        column_map['effect_allele']: hl.tstr,
-        column_map['noneffect_allele']: hl.tstr,
-        column_map['weight']: hl.tfloat64,
+        column_map["chr"]: hl.tstr,
+        column_map["pos"]: hl.tint32,
+        column_map["effect_allele"]: hl.tstr,
+        column_map["noneffect_allele"]: hl.tstr,
+        column_map["weight"]: hl.tfloat64,
     }
 
     table = hl.import_table(
@@ -348,17 +344,18 @@ def _read_prs_weights_header(
         no_header=False,
         types=types,
         comment=comment,
-        **kwargs
+        **kwargs,
     )
     missing = set(col_names) - set(table.row)
     if missing:
         raise ValueError(f"Required columns not in header: {missing}")
 
     standard_exprs = {
-        'chr': table[column_map['chr']], 'pos': table[column_map['pos']],
-        'effect_allele': table[column_map['effect_allele']],
-        'noneffect_allele': table[column_map['noneffect_allele']],
-        'weight': table[column_map['weight']]
+        "chr": table[column_map["chr"]],
+        "pos": table[column_map["pos"]],
+        "effect_allele": table[column_map["effect_allele"]],
+        "noneffect_allele": table[column_map["noneffect_allele"]],
+        "weight": table[column_map["weight"]],
     }
 
     other_exprs = {}
@@ -399,16 +396,16 @@ def _validate_column_map_type(column_map: dict, header: bool):
 
 
 def read_prs_weights(
-    #pylint: disable=too-many-arguments
-    #pylint: disable=too-many-positional-arguments
+    # pylint: disable=too-many-arguments
+    # pylint: disable=too-many-positional-arguments
     file_path: str,
     header: bool,
     column_map: dict[str, str | int],
-    delimiter: str = ',',
-    comment: str | list[str] = '#',
+    delimiter: str = ",",
+    comment: str | list[str] = "#",
     keep_other_cols: bool = False,
     validate_alleles: bool = False,
-    **kwargs
+    **kwargs,
 ) -> hl.Table:
     """
     Reads a file containing variant effect weights for PRS calculation.
@@ -467,10 +464,14 @@ def read_prs_weights(
     """
     timer = SimpleTimer()
     with timer:
-        gcs_path = _stage_local_file_to_gcs(file_path, sub_dir='temp_prs_data')
+        gcs_path = _stage_local_file_to_gcs(file_path, sub_dir="temp_prs_data")
 
         required_keys = {
-            'chr', 'pos', 'effect_allele', 'noneffect_allele', 'weight'
+            "chr",
+            "pos",
+            "effect_allele",
+            "noneffect_allele",
+            "weight",
         }
         if not required_keys.issubset(column_map.keys()):
             missing = required_keys - set(column_map.keys())
@@ -479,7 +480,7 @@ def read_prs_weights(
             if hfs.stat(gcs_path).size == 0:
                 raise ValueError(f"Input file '{file_path}' is empty.")
         except hl.utils.java.FatalError as e:
-            if 'Is a directory' not in str(e):
+            if "Is a directory" not in str(e):
                 raise
 
         _validate_column_map_type(column_map, header)
@@ -495,21 +496,18 @@ def read_prs_weights(
             comment=comment,
             keep_other_cols=keep_other_cols,
             validate_alleles=validate_alleles,
-            **kwargs
+            **kwargs,
         )
 
     logger.info(
         "Weights file reading complete. Total time: %.2f seconds.",
-        timer.duration
+        timer.duration,
     )
 
     return result_table
 
 
-def read_prscs(
-    file_path: str,
-    **kwargs
-) -> hl.Table:
+def read_prscs(file_path: str, **kwargs) -> hl.Table:
     """
     A simple wrapper to read PRS-CS output files.
 
@@ -541,13 +539,16 @@ def read_prscs(
     """
     logger.info("Reading PRS-CS file: %s", file_path)
     prscs_map = {
-        'chr': 1, 'pos': 3, 'effect_allele': 4,
-        'noneffect_allele': 5, 'weight': 6
+        "chr": 1,
+        "pos": 3,
+        "effect_allele": 4,
+        "noneffect_allele": 5,
+        "weight": 6,
     }
     return read_prs_weights(
         file_path=file_path,
         header=False,
         column_map=prscs_map,
-        delimiter='\t',
-        **kwargs
+        delimiter="\t",
+        **kwargs,
     )
