@@ -38,14 +38,31 @@ incomparable across individuals. That is a silent, severe bug. Watch for it.
 
 **Non-split path (`split_multi=False`).** Joins on **locus only**, then
 `_calculate_dosage` reconstructs the sample's alleles and counts copies of the
-effect allele directly, so the score is absolute (no offset trick).
-`strict_allele_match` gates the filter: when True, `_check_allele_match` requires
-one weights allele to equal REF **and** the other to be in the ALT set. When
-False there is **no allele check at all** — the only filter is
-`hl.is_defined(mt.weights_info)` on a locus-only join, so any variant sharing the
-locus is scored, including the wrong alt at a multi-allelic site. Both paths gate
-this identically (`_calculator.py`, `_calculator_batch.py`); don't assume the
-weaker setting still verifies the effect allele.
+effect allele **by string comparison**, so the score is absolute (no offset
+trick). Note what this means: the dosage is always a *truthful* count of the
+effect-allele string in that sample's genotype. Dosage arithmetic is not where
+this path goes wrong — **variant identity** is.
+
+`strict_allele_match` gates the only check on identity. When True,
+`_check_allele_match` requires one weights allele to equal REF **and** the other
+to be in the ALT set — i.e. it asks "is the variant sitting at this position
+actually the variant this weights row describes?" and drops the row when the
+answer is no. When False there is **no allele check at all**: the only filter is
+`hl.is_defined(mt.weights_info)` on a locus-only join, so a weights row is scored
+against whatever variant occupies that coordinate.
+
+The trap: `effect_allele == alleles[0]` (effect allele is REF) is satisfied by
+*any* variant at that locus, because the reference base is the same string
+regardless of which ALT is present. So a weights row whose variant is absent from
+the VDS — strand flip, wrong build, bad rsID mapping, all of which are the
+*likely* reasons for a non-match, since AoU is not missing common GWAS SNPs —
+still matches, and contributes `w * (copies of REF)`, which varies with an
+unrelated ALT's genotype. Every sample gets a term driven by a variant the GWAS
+never studied. Mirror case fails safe: when the effect allele is an ALT that
+isn't present, dosage is 0 and the row contributes nothing.
+
+Both call sites gate this identically (`_calculator.py`, `_calculator_batch.py`).
+Don't assume the weaker setting verifies anything — it does not.
 
 **Dosage and missingness.** `_calculate_dosage` handles both `GT` (global
 indices into `alleles`) and `LGT`/`LA` (local indices via the local-to-global
