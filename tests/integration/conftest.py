@@ -1,0 +1,195 @@
+"""Fixtures for the real-hail integration tier.
+
+Nothing here is mocked. A local Spark backend is started, a small GRCh38
+VariantDataset is built by hand, and the library's real scoring functions run
+against it. `tests/prs/` checks that the code calls the right hail methods;
+this tier is the only one that can tell a correct score from a wrong one.
+
+The VDS is built through `hl.vds.VariantDataset.from_merged_representation`
+rather than by assembling `reference_data`/`variant_data` directly, because it
+reproduces the one property the scoring logic hinges on: a homozygous-reference
+sample has **no entry** in `variant_data`. It is not an entry whose genotype is
+missing -- it is filtered out of the entry stream entirely, and hail's
+aggregators never visit it. See `test_allele_matching.py` for why that matters.
+"""
+
+import hail as hl
+import pytest
+
+pytestmark = pytest.mark.integration
+
+SAMPLES = ["S1", "S2", "S3", "S4"]
+
+# The mock VDS, one locus per scenario. Genotypes are given as global allele
+# indices; the LGT/LA fixture converts them to local indices. A sample absent
+# from a row's dict is homozygous reference there and gets a reference block.
+#
+#   locus         alleles        who carries what
+VARIANTS = [
+    # Clean biallelic site. Weights name G (the ALT) as the effect allele.
+    ("chr1:1000", ["A", "G"], {"S2": [0, 1], "S3": [1, 1]}),
+    # Clean biallelic site, but the weights name A (the REF) as the effect
+    # allele. S4 is a genuine no-call here: its entry exists, its genotype is
+    # missing. That is a different state from S1's absence, and the two are
+    # scored differently.
+    ("chr1:2000", ["A", "G"], {"S2": [0, 1], "S3": [1, 1], "S4": None}),
+    # The VDS has an A/T SNP here. The weights describe an A/G SNP -- a variant
+    # that does not exist at this position. Effect allele is A, the REF base.
+    ("chr1:3000", ["A", "T"], {"S2": [0, 1], "S3": [1, 1]}),
+    # Same mismatch, mirrored: effect allele is G, which is absent from the VDS.
+    ("chr1:4000", ["A", "T"], {"S2": [0, 1], "S3": [1, 1]}),
+    # Multi-allelic. S2 is C/G, S3 is C/T. Weights name T as the effect allele.
+    ("chr1:5000", ["C", "G", "T"], {"S2": [0, 1], "S3": [0, 2]}),
+]
+
+# Every weight is 1.0, so `prs` is literally the summed count of effect-allele
+# copies. Score assertions stay readable as copy-number arithmetic.
+WEIGHTS = [
+    {"chr": "chr1", "pos": 1000, "effect_allele": "G",
+     "noneffect_allele": "A", "weight": 1.0},
+    {"chr": "chr1", "pos": 2000, "effect_allele": "A",
+     "noneffect_allele": "G", "weight": 1.0},
+    {"chr": "chr1", "pos": 3000, "effect_allele": "A",
+     "noneffect_allele": "G", "weight": 1.0},
+    {"chr": "chr1", "pos": 4000, "effect_allele": "G",
+     "noneffect_allele": "A", "weight": 1.0},
+    {"chr": "chr1", "pos": 5000, "effect_allele": "T",
+     "noneffect_allele": "C", "weight": 1.0},
+]  # fmt: skip
+
+
+@pytest.fixture(scope="session", autouse=True)
+def hail_context(tmp_path_factory):
+    """Starts one local Spark backend for the whole session."""
+    hl.init(
+        master="local[1]",
+        quiet=True,
+        skip_logging_configuration=True,
+        tmp_dir=str(tmp_path_factory.mktemp("hail")),
+    )
+    hl.default_reference("GRCh38")
+    yield
+    hl.stop()
+
+
+def _build_vds(local_encoding: bool) -> hl.vds.VariantDataset:
+    """Builds the mock VDS from VARIANTS.
+
+    `_calculate_dosage` branches on whether the entries carry `GT` (indices into
+    the global `alleles` array) or `LGT`/`LA` (indices into a local-to-global
+    map). Real VDS versions differ on this, so both are built and every dosage
+    test runs against both.
+    """
+    schema = hl.tstruct(
+        locus_str=hl.tstr,
+        alleles=hl.tarray(hl.tstr),
+        s=hl.tstr,
+        gt=hl.tarray(hl.tint32),
+        la=hl.tarray(hl.tint32),
+        GQ=hl.tint32,
+        END=hl.tint32,
+    )
+
+    entries = []
+    for locus_str, alleles, carriers in VARIANTS:
+        pos = int(locus_str.split(":")[1])
+        for sample in SAMPLES:
+            if sample not in carriers:
+                # Homozygous reference: a reference block, never a variant
+                # entry. This is what makes hom-ref samples invisible to the
+                # variant_data entry stream.
+                entries.append(
+                    {
+                        "locus_str": locus_str,
+                        "alleles": [alleles[0]],
+                        "s": sample,
+                        "gt": [0, 0],
+                        "la": [0],
+                        "GQ": 99,
+                        "END": pos,
+                    }
+                )
+                continue
+
+            global_gt = carriers[sample]
+            if local_encoding:
+                # LA lists the global allele indices this sample uses; LGT
+                # indexes into LA. A no-call keeps LA (and GQ) defined, so the
+                # entry still exists.
+                local_alleles = (
+                    [0] if global_gt is None else sorted({0, *global_gt})
+                )
+                local_gt = (
+                    None
+                    if global_gt is None
+                    else [local_alleles.index(i) for i in global_gt]
+                )
+                entries.append(
+                    {
+                        "locus_str": locus_str,
+                        "alleles": alleles,
+                        "s": sample,
+                        "gt": local_gt,
+                        "la": local_alleles,
+                        "GQ": 40,
+                        "END": None,
+                    }
+                )
+            else:
+                entries.append(
+                    {
+                        "locus_str": locus_str,
+                        "alleles": alleles,
+                        "s": sample,
+                        "gt": global_gt,
+                        "la": None,
+                        "GQ": 40,
+                        "END": None,
+                    }
+                )
+
+    ht = hl.Table.parallelize(entries, schema)
+    ht = ht.annotate(
+        locus=hl.parse_locus(ht.locus_str, reference_genome="GRCh38")
+    )
+    call = hl.or_missing(hl.is_defined(ht.gt), hl.call(ht.gt[0], ht.gt[1]))
+    if local_encoding:
+        ht = ht.annotate(LGT=call, LA=ht.la)
+    else:
+        ht = ht.annotate(GT=call)
+    ht = ht.drop("gt", "la", "locus_str")
+
+    mt = ht.to_matrix_table(row_key=["locus", "alleles"], col_key=["s"])
+    vds = hl.vds.VariantDataset.from_merged_representation(
+        mt, is_split=not local_encoding
+    )
+    # Fail loudly on a malformed VDS rather than producing quiet nonsense.
+    vds.validate()
+    return vds
+
+
+@pytest.fixture(scope="session")
+def vds_lgt():
+    """VDS with local (`LGT`/`LA`) genotype encoding -- what AoU ships."""
+    return _build_vds(local_encoding=True)
+
+
+@pytest.fixture(scope="session")
+def vds_gt():
+    """VDS with global (`GT`) genotype encoding."""
+    return _build_vds(local_encoding=False)
+
+
+@pytest.fixture(scope="session")
+def raw_weights():
+    """The mock GWAS summary, unvalidated -- as a user would hand it over."""
+    return hl.Table.parallelize(
+        WEIGHTS,
+        hl.tstruct(
+            chr=hl.tstr,
+            pos=hl.tint32,
+            effect_allele=hl.tstr,
+            noneffect_allele=hl.tstr,
+            weight=hl.tfloat64,
+        ),
+    )

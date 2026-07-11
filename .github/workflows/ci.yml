@@ -70,7 +70,28 @@ jobs:
           environments: ci
           cache: true
 
-      # The test suite mocks hail, so no Spark backend is started; hail only
-      # needs to be importable.
+      # This suite mocks hail, so no Spark backend is started; hail only needs
+      # to be importable. It checks that the code calls the right hail methods,
+      # not that the resulting scores are right -- that is the integration job.
       - name: Run test suite
         run: pixi run -e ci test
+
+  # The only job that can tell a correct score from a wrong one. Starts a real
+  # local Spark backend, builds a mock VDS and scores it, so allele orientation,
+  # dosage and join keys are validated against hail rather than a MagicMock.
+  # Kept separate from `test` so the mocked suite stays sub-second.
+  integration:
+    name: Integration (real hail)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up pixi (integration environment)
+        uses: prefix-dev/setup-pixi@v0.10.0
+        with:
+          pixi-version: v0.70.2
+          environments: integration
+          cache: true
+
+      - name: Run integration suite
+        run: pixi run -e integration test-integration

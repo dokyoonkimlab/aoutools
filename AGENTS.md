@@ -8,28 +8,49 @@ files and calculates PRS directly against the All of Us Hail VDS.
 
 ## Environment & commands
 
-Uses **pixi** (see `pyproject.toml`) with three environments: `default`/`dev`
+Uses **pixi** (see `pyproject.toml`) with four environments: `default`/`dev`
 (development + docs), `ci` (linux-64, pins `hail==0.2.135` and the rest of the
-Workbench genomics runtime), and `lint` (ruff only).
+Workbench genomics runtime), `integration` (real hail + a JDK, **both** platforms),
+and `lint` (ruff only).
 
 The `default` env is auto-activated by **direnv** (`.envrc`, committed) on `cd`
 into the repo, so its tools are already on `PATH`; run `direnv allow` once per
 clone. Everything else still goes through `pixi run …` — never system python.
 
 ```bash
-pixi run -e ci test              # full test suite (pytest -v); Linux only
+pixi run -e ci test                    # mocked suite (tests/prs); Linux only
 pixi run -e ci pytest tests/prs/test_reader.py::test_name   # single test
+pixi run -e integration test-integration   # real-hail suite; macOS or Linux
 pixi run docs                    # build Sphinx HTML docs
 pixi run lint                    # ruff check + format --check (what CI runs)
 pixi run format                  # ruff format + check --fix (writes)
 pixi run setup-hooks             # install pre-commit hooks; once per clone
 ```
 
-Tests **mock `hail`** but still import it, so they run only under `ci` (Linux),
-not macOS; CI runs the suite on `ubuntu-latest` for `main`/`dev`. `hail` is
-deliberately kept out of `[project.dependencies]`: the Workbench provides it, it
-ships no wheel on some platforms (e.g. `osx-arm64`), and it pins numpy/pandas
-tightly.
+## Two test tiers
+
+**`tests/prs/` mocks `hail`** with `MagicMock` (but still imports it, so it runs
+only under `ci`/Linux, not macOS). It checks that the code calls the right hail
+methods. **It cannot tell a correct score from a wrong one** — a flipped effect
+allele or a bad join key still yields a clean float column and a green suite.
+
+**`tests/integration/` runs real hail.** It starts a local Spark backend, builds a
+GRCh38 mock VDS and a mock GWAS summary, and asserts **per-sample allele copy
+numbers** for every combination of `split_multi` / `ref_is_effect_allele` /
+`strict_allele_match`, on both `GT` and `LGT`/`LA` genotype encodings. All weights
+are `1.0`, so `prs` *is* the copy count and the assertions read as arithmetic.
+
+Several tests deliberately pin **known bugs** so a fix is reviewable; each says so
+in its docstring and points at `TODO.md`. Do not "make them pass" — read them.
+
+This tier is why `hail` is installed from **PyPI** in the `integration` feature
+rather than conda: the conda package is linux-64 only, but the PyPI wheel is
+`py3-none-any` (it bundles the Spark JAR), so given a JDK it runs on macOS too.
+`hail` stays out of `[project.dependencies]` regardless: the Workbench provides
+it, and it pins numpy/pandas tightly.
+
+Any change to scoring logic should land with an integration test. The mocked tier
+will not catch you.
 
 ## Lint & formatting
 

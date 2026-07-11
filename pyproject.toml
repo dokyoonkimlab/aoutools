@@ -78,7 +78,11 @@ aoutools = { path = ".", editable = true }
 [tool.pixi.tasks]
 docs = "make -C docs html"
 undocs = "make -C docs clean"
-test = "pytest -v"
+# The two tiers answer different questions and are kept apart. `test` is the
+# fast mocked suite (tests/prs); `test-integration` runs real hail against a
+# mock VDS (tests/integration) and needs the `integration` env for a JVM.
+test = "pytest -v -m 'not integration'"
+test-integration = "pytest -v -m integration"
 # One-time per clone, after `pixi install`: install the git pre-commit hook.
 setup-hooks = "pre-commit install"
 
@@ -142,9 +146,31 @@ numpy = "==2.0.2"
 pandas = "==2.3.0"
 google-cloud-storage = "==2.13.0"
 
-# Default is the dev environment; ci is a lean linux-64 environment for tests;
-# lint is a ruff-only environment for the CI lint job.
+# Integration feature: unlike `ci`, this one actually *runs* hail. It starts a
+# local Spark backend, builds a mock VDS and scores it, so the allele-matching
+# logic is validated for real rather than against a MagicMock.
+#
+# hail is taken from PyPI, not conda: the conda package is linux-64 only, but the
+# PyPI distribution is a single `py3-none-any` wheel bundling hail-all-spark.jar,
+# so it installs on osx-arm64 too given a JVM. That is the whole reason this tier
+# can run on a Mac while the `ci` env cannot.
+[tool.pixi.feature.integration.dependencies]
+openjdk = "11.*"
+pytest = ">=8.4.1,<9"
+
+[tool.pixi.feature.integration.pypi-dependencies]
+hail = "==0.2.135"
+
+# Default is the dev environment; ci is a lean linux-64 environment for the
+# mocked tests; integration runs real hail on both platforms; lint is a
+# ruff-only environment for the CI lint job.
 [tool.pixi.environments]
 default = { features = ["dev", "lint"], solve-group = "default" }
 ci = { features = ["ci"] }
+integration = { features = ["integration"] }
 lint = { features = ["lint"], no-default-feature = true }
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: runs against a real hail Spark backend (slow, needs a JVM)",
+]
