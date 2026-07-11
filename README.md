@@ -32,3 +32,21 @@ run the following commands directly in a Jupyter Notebook cell.
 Please check the online [aoutools
 Documentation](https://aoutools.readthedocs.io) for how-to guides and API
 reference.
+
+## Development
+
+Assumes [pixi](https://pixi.sh) and [direnv](https://direnv.net) are already
+installed.
+
+```bash
+pixi install      # build the env from pixi.lock
+direnv allow      # auto-activate it on cd into the repo (once per clone)
+```
+
+The test suite mocks `hail` but still imports it, so it runs only in the
+linux-64 `ci` environment:
+
+```bash
+pixi run -e ci test   # full test suite
+pixi run docs         # build the Sphinx HTML docs
+```

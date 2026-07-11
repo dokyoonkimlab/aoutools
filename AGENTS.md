@@ -12,6 +12,10 @@ Uses **pixi** (see `pyproject.toml`) with two environments: `default`/`dev`
 (development + docs) and `ci` (linux-64, pins `hail==0.2.135` and the rest of
 the Workbench genomics runtime).
 
+The `default` env is auto-activated by **direnv** (`.envrc`, committed) on `cd`
+into the repo, so its tools are already on `PATH`; run `direnv allow` once per
+clone. Everything else still goes through `pixi run …` — never system python.
+
 ```bash
 pixi run -e ci test              # full test suite (pytest -v); Linux only
 pixi run -e ci pytest tests/prs/test_reader.py::test_name   # single test

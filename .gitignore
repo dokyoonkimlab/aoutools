@@ -136,8 +136,11 @@ celerybeat.pid
 *.sage.py
 
 # Environments
+#   `.envrc` is deliberately NOT ignored: it holds no secrets, only the direnv
+#   hook that activates the pixi env, and must be committed for that to work on
+#   a fresh clone. Don't re-add it from a template. `.env` stays ignored.
 .env
-.envrc
+.direnv/
 .venv
 env/
 venv/
