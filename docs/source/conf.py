@@ -6,10 +6,24 @@
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
+import importlib.metadata
+
 project = "aoutools"
 copyright = "2025, Jaehyun Joo"
 author = "Jaehyun Joo"
-release = "0.1.0"
+
+# Read the version from installed package metadata, mirroring
+# aoutools/__init__.py, so pyproject.toml stays the single source of truth. This
+# only reads metadata -- it does not import aoutools, which would fail here
+# because hail is mocked for autodoc rather than installed.
+#
+# Import the module, not the `version` function: Sphinx reads module-level names
+# in conf.py as config values, and a bare `version` name would shadow its own
+# `version` config setting with a function object.
+try:
+    release = importlib.metadata.version("aoutools")
+except importlib.metadata.PackageNotFoundError:
+    release = "0.0.0"
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration

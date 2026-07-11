@@ -96,7 +96,6 @@ google-cloud-storage = ">=2.13,<3"
 [tool.pixi.feature.dev.dependencies]
 sphinx = ">=8.2.3,<9"
 sphinx-autodoc-typehints = ">=3.2.0,<4"
-mypy = ">=1.17.1,<2"
 furo = ">=2024.8.6,<2025"
 pytest = ">=8.4.1,<9"
 pytest-mock = ">=3.14.1,<4"
@@ -105,7 +104,7 @@ twine = ">=6.1.0,<7"
 pre-commit = ">=4,<5"
 
 # Lean feature for the CI lint job: ruff and nothing else, so linting doesn't
-# pay for sphinx/mypy/twine. Config lives in [tool.ruff] above. The `default`
+# pay for sphinx/twine. Config lives in [tool.ruff] above. The `default`
 # env also pulls this feature in, so `pixi run lint` works locally and the task
 # has a single definition.
 [tool.pixi.feature.lint.dependencies]
