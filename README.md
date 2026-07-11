@@ -39,8 +39,9 @@ Assumes [pixi](https://pixi.sh) and [direnv](https://direnv.net) are already
 installed.
 
 ```bash
-pixi install      # build the env from pixi.lock
-direnv allow      # auto-activate it on cd into the repo (once per clone)
+pixi install          # build the env from pixi.lock
+direnv allow          # auto-activate it on cd into the repo (once per clone)
+pixi run setup-hooks  # install the ruff pre-commit hooks (once per clone)
 ```
 
 The test suite mocks `hail` but still imports it, so it runs only in the
@@ -49,4 +50,11 @@ linux-64 `ci` environment:
 ```bash
 pixi run -e ci test   # full test suite
 pixi run docs         # build the Sphinx HTML docs
+pixi run lint         # ruff lint + format check (what CI runs)
+pixi run format       # auto-fix and format
 ```
+
+Formatting is enforced by `ruff format`. The bulk-reformat commit is listed in
+`.git-blame-ignore-revs`; to skip it in local blame, run
+`git config blame.ignoreRevsFile .git-blame-ignore-revs` (GitHub applies it
+automatically).
