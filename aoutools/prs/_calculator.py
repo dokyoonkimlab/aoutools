@@ -9,8 +9,6 @@ import pandas as pd
 from aoutools._utils.helpers import SimpleTimer
 
 from ._calculator_utils import (
-    _calculate_dosage,
-    _check_allele_match,
     _create_1bp_intervals,
     _orient_weights_for_split,
     _prepare_samples_to_keep,
@@ -26,10 +24,7 @@ def _prepare_mt_split(
     vds: hl.vds.VariantDataset, weights_table: hl.Table, config: PRSConfig
 ) -> hl.MatrixTable:
     """
-    Prepares a MatrixTable for the split-multi PRS calculation path.
-
-
-    Prepares a MatrixTable for split-multi PRS calculation.
+    Prepares a MatrixTable for PRS calculation.
 
     Splits multi-allelic sites in the VDS, orients weights based on
     `ref_is_effect_allele`, joins with the weights table using (locus,
@@ -43,7 +38,7 @@ def _prepare_mt_split(
         A chunk of the PRS weights table.
     config : PRSConfig
         A configuration object controlling PRS behavior, including
-        `split_multi`, `ref_is_effect_allele`, and `detailed_timings`.
+        `ref_is_effect_allele` and `detailed_timings`.
 
     Returns
     -------
@@ -78,70 +73,15 @@ def _prepare_mt_split(
         return mt
 
 
-def _prepare_mt_non_split(
-    vds: hl.vds.VariantDataset, weights_table: hl.Table, config: PRSConfig
-) -> hl.MatrixTable:
-    """
-    Prepares a MatrixTable for the non-split PRS calculation path.
-
-    This function takes an interval-filtered VDS and joins it with the
-    weights table using a locus-based key. It optionally performs a strict
-    allele match to handle allele orientation and then calculates dosage
-    using a custom multi-allelic dosage function.
-
-    Parameters
-    ----------
-    vds : hail.vds.VariantDataset
-        An interval-filtered Variant Dataset.
-    weights_table : hail.Table
-        A chunk of the weights table.
-    config : PRSConfig
-        A configuration object controlling `strict_allele_match` and
-        `detailed_timings`.
-
-    Returns
-    -------
-    hail.MatrixTable
-        A MatrixTable, filtered and annotated with `weights_info` and `dosage`
-        for the specified effect allele.
-
-    See also
-    --------
-    PRSConfig : A configuration class that holds parameters for PRS calculation.
-    """
-    mt = vds.variant_data
-
-    with _log_timing(
-        "Planning: Annotating variants with weights", config.detailed_timings
-    ):
-        mt = mt.annotate_rows(weights_info=weights_table[mt.locus])
-        mt = mt.filter_rows(hl.is_defined(mt.weights_info))
-
-    if config.strict_allele_match:
-        with _log_timing(
-            "Planning: Performing strict allele match", config.detailed_timings
-        ):
-            is_valid_pair = _check_allele_match(mt, mt.weights_info)
-            mt = mt.filter_rows(is_valid_pair)
-
-    with _log_timing(
-        "Planning: Calculating per-variant dosage",
-        config.detailed_timings,
-    ):
-        mt = mt.annotate_entries(dosage=_calculate_dosage(mt))
-
-    return mt
-
-
 def _calculate_prs_chunk(
     weights_table: hl.Table, vds: hl.vds.VariantDataset, config: PRSConfig
 ) -> hl.Table:
     """
     Calculates a Polygenic Risk Score (PRS) for a single chunk of variants.
 
-    This function serves as the core computation step. It prepares the variant
-    data depending on whether multi-allelic splitting is enabled, and computes
-    the PRS using dosage-weight aggregation.
+    This function serves as the core computation step. It splits multi-allelic
+    sites, joins the variant data to the weights, and computes the PRS using
+    dosage-weight aggregation.
 
     Parameters
     ----------
@@ -150,8 +90,8 @@ def _calculate_prs_chunk(
     vds : hail.vds.VariantDataset
         The Variant Dataset containing genotypes to score.
     config : PRSConfig
-        A configuration object specifying settings such as `split_multi`,
-        `include_n_matched`, and `sample_id_col`.
+        A configuration object specifying settings such as
+        `ref_is_effect_allele`, `include_n_matched`, and `sample_id_col`.
 
     Returns
     -------
@@ -163,18 +103,11 @@ def _calculate_prs_chunk(
     --------
     PRSConfig : A configuration class that holds parameters for PRS calculation.
     """
-    if config.split_multi:
-        mt = _prepare_mt_split(
-            vds=vds,
-            weights_table=weights_table,
-            config=config,
-        )
-    else:
-        mt = _prepare_mt_non_split(
-            vds=vds,
-            weights_table=weights_table,
-            config=config,
-        )
+    mt = _prepare_mt_split(
+        vds=vds,
+        weights_table=weights_table,
+        config=config,
+    )
 
     # Chunks aggregation
     prs_table = mt.select_cols(
@@ -333,22 +266,19 @@ def calculate_prs(
 
     Notes
     -----
-    By default (`config.split_multi=True`), this function prioritizes
-    robustness over performance by splitting multi-allelic variants.
+    Multi-allelic variants in the VDS are always split before scoring. Splitting
+    puts each allele in its minimal representation, which lets a simple variant
+    in the weights table match a complex one in the VDS: a weights row for
+    chr1:10075251 A/G matches VDS alleles ['AGGGC', 'A', 'GGGGC'], because
+    'AGGGC' -> 'GGGGC' minimizes to ['A', 'G'] at that same locus.
 
-    This split_multi process includes creating a minimal representation for
-    variants. For example, for a variant chr1:10075251 A/G in the weights
-    table, split_multi can intelligently match it to a complex indel in the VDS
-    (e.g., alleles=['AGGGC', 'A', 'GGGGC']) by simplifying the VDS
-    representation to its minimal form (['A', 'G']) for 'AGGGC' -> 'GGGGC'.
-
-    The non-split path (`config.split_multi=False`) is a faster but less robust
-    alternative. It relies on a direct string comparison of alleles and will
-    fail to match the complex variant described above. Furthermore, if the
-    weights table contains multiple entries for the same locus, the non-split
-    path will arbitrarily select only one of them. This "power-user" option
-    should only be used if you are certain that both your VDS and weights table
-    contain only simple, well-matched, bi-allelic variants.
+    Minimal representation can also *move* a variant's locus, and such variants
+    are currently missed. VDS alleles ['AGG', 'AG', 'AGT'] at chr1:1000 minimize
+    to ['AG', 'A'] at chr1:1000 and to ['G', 'T'] at chr1:1002 -- the second
+    shifts, because those two alleles share a leading 'AG'. A weights row naming
+    that SNP sits at chr1:1002, but the VDS row is read by interval from
+    chr1:1000, so it is filtered out before splitting and never scores. See
+    `TODO.md`, Finding 5.
 
     Parameters
     ----------

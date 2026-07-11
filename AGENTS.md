@@ -36,9 +36,14 @@ allele or a bad join key still yields a clean float column and a green suite.
 
 **`tests/integration/` runs real hail.** It starts a local Spark backend, builds a
 GRCh38 mock VDS and a mock GWAS summary, and asserts **per-sample allele copy
-numbers** for every combination of `split_multi` / `ref_is_effect_allele` /
-`strict_allele_match`, on both `GT` and `LGT`/`LA` genotype encodings. All weights
-are `1.0`, so `prs` *is* the copy count and the assertions read as arithmetic.
+numbers**. All weights are `1.0`, so `prs` *is* the copy count and the assertions
+read as arithmetic.
+
+The load-bearing fact it pins: **a hom-ref sample has no entry in `variant_data`**,
+and hail filters absent entries out of the entry stream, so aggregators never visit
+it. No missing-genotype default can reach it. Confirmed on the real All of Us VDS
+(`notebooks/verify_hom_ref_dosage.ipynb`); it is why the non-split scoring path was
+removed.
 
 Several tests deliberately pin **known bugs** so a fix is reviewable; each says so
 in its docstring and points at `TODO.md`. Do not "make them pass" — read them.
@@ -82,11 +87,16 @@ Public API is re-exported from internal `_`-prefixed modules via
 **Calculation strategy** (the core design): to stay cheap on the large VDS, the
 weights table is chunked into `chunk_size` variants; each chunk builds 1bp
 intervals for `hl.vds.filter_intervals` so only relevant loci are read, computes
-its PRS, and results are summed across chunks. `PRSConfig.split_multi` selects
-two allele-handling paths — `True` (default) splits multi-allelic sites and
-joins on (locus, alleles), with `ref_is_effect_allele` orienting the effect
-allele; `False` keeps them, with `strict_allele_match` controlling match rigor.
-Shared helpers live in `_calculator_utils.py`.
+its PRS, and results are summed across chunks. There is **one** scoring path:
+`hl.vds.split_multi` splits multi-allelic sites, the weights are joined on
+(locus, alleles) — so the join key *is* the allele check — and dosage is
+`GT.n_alt_alleles()`. `ref_is_effect_allele` orients the effect allele. Shared
+helpers live in `_calculator_utils.py`.
+
+A second, non-split path existed and was removed: it joined on locus alone and
+counted effect-allele copies by string comparison, which meant every hom-ref
+sample silently scored 0 at a variant whose effect allele was the REF base. That
+reorders a cohort. `TODO.md` has the evidence and the two remaining tasks.
 
 `_utils.py:_stage_local_file_to_gcs` copies local paths into
 `$WORKSPACE_BUCKET/data/...` because Hail's Spark cluster can't read the local

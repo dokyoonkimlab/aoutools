@@ -27,74 +27,56 @@ plainly rather than manufacturing findings.
 
 Read the code before trusting this summary — it is a map, not the territory.
 
-There are two scoring paths, selected by `PRSConfig.split_multi`.
+There is **one** scoring path. `hl.vds.split_multi` splits multi-allelic sites,
+then `_orient_weights_for_split` builds a canonical `[ref, alt]` allele pair and
+keys the weights on `(locus, alleles)`. Dosage is `mt.GT.n_alt_alleles()` — a
+count of **ALT** copies. Because the join key carries the alleles, the key *is*
+the allele check: a weights row cannot match a variant with different alleles.
 
-**Split path (`split_multi=True`, the default).** `hl.vds.split_multi` splits
-multi-allelic sites, then `_orient_weights_for_split` builds a canonical
-`[ref, alt]` allele pair and keys the weights on `(locus, alleles)`. Dosage is
-`mt.GT.n_alt_alleles()` — a count of **ALT** copies.
+**The fact everything else follows from: a hom-ref sample is not an entry.**
+In a VDS, `variant_data` holds entries only for samples with a non-reference call
+at a row. A hom-ref sample is **absent**, and hail *filters absent entries out of
+the entry stream* — aggregators never visit them, so **no default of any kind can
+be applied to them**. This is not a mock artifact; it is confirmed on the real
+All of Us VDS (94 of 200 samples had zero entries across a 5-variant window; see
+`notebooks/verify_hom_ref_dosage.ipynb`).
 
-The load-bearing subtlety: when `ref_is_effect_allele=True`, the effect allele
-sits in the REF position, so the true contribution is `w * (2 - n_alt)`. The code
-instead **negates the weight** and multiplies by `n_alt`, giving `-w * n_alt`.
-These differ by a constant `2w` per matched variant. Because rows are filtered
-identically for every sample, that constant is the same for all samples, so
-rankings and standardized scores are preserved but **absolute scores are offset**.
-If a change makes that offset vary per sample — e.g. by filtering rows per sample,
-or by making the matched-variant set genotype-dependent — the scores become
-incomparable across individuals. That is a silent, severe bug. Watch for it.
+Any scheme that tries to give a hom-ref sample a dosage by handling a *missing
+genotype* is therefore unreachable. A missing genotype is a **no-call** — an
+entry that exists with an unknown call — which is a different thing entirely.
+A previous `_calculate_dosage` conflated the two and scored no-calls as hom-ref
+while losing every actual hom-ref sample. If you see a change reintroduce a
+missing-genotype branch "to handle sparse hom-ref calls", that is the bug
+returning. Reject it.
 
-**Non-split path (`split_multi=False`).** Joins on **locus only**, then
-`_calculate_dosage` reconstructs the sample's alleles and counts copies of the
-effect allele **by string comparison**. The dosage is always a *truthful* count
-of the effect-allele string in whatever genotype it is handed. Dosage arithmetic
-is not where this path goes wrong — **variant identity** and **who gets visited
-at all** are.
+**Allele orientation — the live bug, and Task 2's target.** When
+`ref_is_effect_allele=True`, the effect allele sits in the REF position, so the
+true contribution is `w * (2 - n_alt)`. The code instead **negates the weight**
+and multiplies by `n_alt`, giving `-w * n_alt`. These differ by a constant `2w`
+per matched variant.
 
-`strict_allele_match` gates the only check on identity. When True,
-`_check_allele_match` requires one weights allele to equal REF **and** the other
-to be in the ALT set — i.e. it asks "is the variant sitting at this position
-actually the variant this weights row describes?" and drops the row when the
-answer is no. When False there is **no allele check at all**: the only filter is
-`hl.is_defined(mt.weights_info)` on a locus-only join, so a weights row is scored
-against whatever variant occupies that coordinate.
+That constant is the same for every sample — including the hom-ref sample, who
+contributes 0 to both — so rankings and standardized scores survive while
+**absolute scores are offset**. This invariant is the whole reason the offset is
+tolerable, and `test_ref_is_effect_offsets_every_sample_equally` pins it. If a
+change makes the offset vary per sample — by filtering rows per sample, or by
+making the matched-variant set genotype-dependent — scores become incomparable
+across individuals. That is a silent, severe bug. Watch for it.
 
-The trap: `effect_allele == alleles[0]` (effect allele is REF) is satisfied by
-*any* variant at that locus, because the reference base is the same string
-regardless of which ALT is present. So a weights row whose variant is absent from
-the VDS — strand flip, wrong build, bad rsID mapping, all of which are the
-*likely* reasons for a non-match, since AoU is not missing common GWAS SNPs —
-still matches, and contributes `w * (copies of REF)`, which varies with an
-unrelated ALT's genotype. Every sample gets a term driven by a variant the GWAS
-never studied. Mirror case fails safe: when the effect allele is an ALT that
-isn't present, dosage is 0 and the row contributes nothing.
+`ref_is_effect_allele` is also a **global** flag standing in for a **per-row**
+property. Rows whose orientation disagrees with the flag produce a join key that
+does not exist and are silently dropped — not scored, not counted in `n_matched`.
+The PGS Catalog does not harmonize the effect allele onto the ALT, so mixed-
+orientation files are the normal case. See `TODO.md`, Finding 4.
 
-Both call sites gate this identically (`_calculator.py`, `_calculator_batch.py`).
-Don't assume the weaker setting verifies anything — it does not.
-
-**Dosage and missingness — read this twice, the comments in the code are wrong.**
-`_calculate_dosage` handles both `GT` (global indices into `alleles`) and
-`LGT`/`LA` (local indices via the local-to-global map). It opens with a branch
-that scores a missing genotype as **homozygous reference** (dosage `2` if the
-effect allele is REF), documented as "accounting for sparse storage of homozygous
-reference calls".
-
-That documentation is false, and `tests/integration/` proves it. A hom-ref sample
-has **no entry** in `variant_data`, and hail *filters absent entries out of the
-entry stream* — aggregators never visit them, so no default of any kind is
-applied. The branch cannot be reached that way. It fires for exactly one thing:
-an entry that exists with a missing genotype, i.e. a genuine **no-call**, which
-it then invents a hom-ref genotype for.
-
-Two consequences, both live bugs (see `TODO.md`):
-- On the non-split path, a weights row whose **effect allele is the REF base**
-  loses every hom-ref sample — they score 0 where the truth is `2w`. This is
-  *not* a uniform offset; it hits only samples who are hom-ref at that site, so
-  it is genotype-dependent and it **reorders samples**.
-- A no-call is scored as two copies of the reference.
-
-Do not "fix" a missing-genotype branch without first checking whether the entry
-it is meant to serve is even in the stream.
+**Interval prefilter vs. minrep (Finding 5).** `_create_1bp_intervals` builds
+intervals at the **weights** locus and `hl.vds.filter_intervals` runs on the
+**unsplit** VDS. But `split_multi` applies `hl.min_rep`, which can **move** a
+locus: `chr1:1000 [AGG, AG, AGT]` minreps to `chr1:1002 [G, T]`. The weights name
+that SNP at 1002; the VDS row lives at 1000; the interval filter drops it before
+`split_multi` ever runs. Such variants are silently never scored. Also note
+`hl.vds.split_multi(vds)` is called with the default `filter_changed_loci=False`,
+which **raises** on a locus-shifting variant that does survive the filter.
 
 **No strand harmonization exists anywhere.** Weights are assumed to be on the
 same strand and genome build as the VDS. Palindromic variants (A/T, C/G) are not
@@ -108,19 +90,23 @@ library is affordable on the All of Us VDS.
 ## What to check, in priority order
 
 1. **Allele orientation.** Does the effect allele still line up with the dosage
-   being counted, on both paths and for both settings of `ref_is_effect_allele`?
-   A sign error or a swapped `[ref, alt]` pair inverts the score's direction —
-   the output still looks like a perfectly reasonable distribution.
+   being counted, for both settings of `ref_is_effect_allele`? A sign error or a
+   swapped `[ref, alt]` pair inverts the score's direction — the output still
+   looks like a perfectly reasonable distribution. And does the `2w` offset stay
+   uniform across samples?
 
-2. **Join keys.** Split path must key on `(locus, alleles)`; non-split on
-   `locus`. Keying the weights differently from the MatrixTable silently drops
-   every variant (score → 0 for everyone, or an empty join that looks like "no
-   overlap") or matches the wrong alt at multi-allelic sites.
+2. **Join keys.** The weights must be keyed on `(locus, alleles)`, matching the
+   post-split MatrixTable. Keying them differently silently drops every variant
+   (score → 0 for everyone, or an empty join that looks like "no overlap") or
+   matches the wrong alt at multi-allelic sites. A change to key on locus alone
+   removes the only allele check there is.
 
-3. **Dosage vs. missingness.** Is a genotype that should be hom-ref still scored
-   as hom-ref, and one that is genuinely missing not being invented? Check the
-   `GT` vs `LGT`/`LA` branches independently — a change that only fixes one is a
-   half-fix that behaves differently across VDS versions.
+3. **Who gets visited.** A sample absent from `variant_data` is hom-ref and is
+   never aggregated over. Any per-sample quantity that should include hom-ref
+   samples must be supplied as a **row-level constant**, not by handling a
+   missing genotype. Conversely, a genuinely missing genotype is a no-call and
+   must not be imputed. Confusing these two is the bug that killed the
+   non-split path.
 
 4. **Chunk aggregation.** Chunks must partition the variants (no overlap → no
    double-counting; no gaps → no dropped weights), and per-sample sums must add
@@ -141,7 +127,7 @@ library is affordable on the All of Us VDS.
 Read the changed functions and both call sites (`_calculator.py` and
 `_calculator_batch.py` — batch has its own annotation/aggregation code that is
 easy to update in only one place). For each finding, state the config that
-triggers it (`split_multi`, `ref_is_effect_allele`, `strict_allele_match`), the
+triggers it (e.g. `ref_is_effect_allele`), the
 input that exposes it, and what the score becomes versus what it should be.
 
 Say explicitly when a change is correct but *changes scores* — e.g. a fixed

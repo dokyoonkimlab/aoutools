@@ -132,7 +132,7 @@ class TestBatchHelpers:
 
         # Act
         weights_map = {"s1": MagicMock(), "s2": MagicMock()}
-        _prepare_batch_weights_data(weights_map, PRSConfig(split_multi=True))
+        _prepare_batch_weights_data(weights_map, PRSConfig())
 
         # Assert
         assert mock_validate.call_count == 2
@@ -145,7 +145,7 @@ class TestBatchHelpers:
         aggregators for each score.
         """
         # Arrange
-        mocker.patch("aoutools.prs._calculator_batch.hl", MagicMock())
+        mock_hl = mocker.patch("aoutools.prs._calculator_batch.hl", MagicMock())
         mock_build_rows = mocker.patch(
             "aoutools.prs._calculator_batch._build_row_annotations",
             return_value={"anno1": MagicMock()},
@@ -155,7 +155,8 @@ class TestBatchHelpers:
             return_value=MagicMock(),
         )
         mock_vds = MagicMock()
-        mock_mt = mock_vds.variant_data
+        # The MatrixTable is always taken from the *split* VDS.
+        mock_mt = mock_hl.vds.split_multi.return_value.variant_data
 
         # Ensure annotate_rows returns the same mock object so that the
         # subsequent chained calls are made on the configured mock.
@@ -169,7 +170,7 @@ class TestBatchHelpers:
             vds=mock_vds,
             weights_tables_map=weights_map,
             prepared_weights=MagicMock(),
-            config=PRSConfig(split_multi=False),
+            config=PRSConfig(),
         )
 
         # Assert

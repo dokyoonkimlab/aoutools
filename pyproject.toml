@@ -49,6 +49,11 @@ Repository = "https://github.com/dokyoonkimlab/aoutools"
 Issues = "https://github.com/dokyoonkimlab/aoutools/issues"
 Documentation = "https://aoutools.readthedocs.io"
 
+# Pin the package list explicitly. Auto-discovery sees `notebooks/` as a second
+# top-level package and refuses to build.
+[tool.setuptools.packages.find]
+include = ["aoutools*"]
+
 [tool.setuptools.package-data]
 aoutools = ["data/*"]
 
@@ -157,6 +162,9 @@ google-cloud-storage = "==2.13.0"
 [tool.pixi.feature.integration.dependencies]
 openjdk = "11.*"
 pytest = ">=8.4.1,<9"
+# The `ci` env pins hail to linux-64, so on macOS this is also the only env that
+# can run the mocked suite (which patches hail, but still imports it).
+pytest-mock = ">=3.14.1,<4"
 
 [tool.pixi.feature.integration.pypi-dependencies]
 hail = "==0.2.135"

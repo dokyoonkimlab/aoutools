@@ -38,8 +38,10 @@ def totals(vds, raw_weights, chunk_size, **config_kwargs):
     return n_chunks, summed["prs"].to_dict()
 
 
-@pytest.mark.parametrize("split_multi", [True, False])
-def test_chunking_partitions_the_weights(vds_lgt, raw_weights, split_multi):
+@pytest.mark.parametrize("ref_is_effect_allele", [True, False])
+def test_chunking_partitions_the_weights(
+    vds_lgt, raw_weights, ref_is_effect_allele
+):
     """One variant per chunk must give the same score as one chunk for all.
 
     Five weights rows, so `chunk_size=1` means five separate passes over the
@@ -48,10 +50,16 @@ def test_chunking_partitions_the_weights(vds_lgt, raw_weights, split_multi):
     Either shows up here as a changed total.
     """
     n_single, single = totals(
-        vds_lgt, raw_weights, chunk_size=None, split_multi=split_multi
+        vds_lgt,
+        raw_weights,
+        chunk_size=None,
+        ref_is_effect_allele=ref_is_effect_allele,
     )
     n_per_variant, per_variant = totals(
-        vds_lgt, raw_weights, chunk_size=1, split_multi=split_multi
+        vds_lgt,
+        raw_weights,
+        chunk_size=1,
+        ref_is_effect_allele=ref_is_effect_allele,
     )
 
     assert n_single == 1
@@ -97,6 +105,6 @@ def test_aggregate_and_export_sums_across_chunks(
     _aggregate_and_export(partial_dfs, str(out), config)
 
     written = pd.read_csv(out).set_index("person_id")["prs"].to_dict()
-    # Same expectation as test_split_default_counts_alt_copies, now reassembled
+    # Same expectation as test_counts_alt_copies, now reassembled
     # from three separate passes over the VDS.
     assert written == {"S1": 0.0, "S2": 1.0, "S3": 3.0, "S4": 0.0}

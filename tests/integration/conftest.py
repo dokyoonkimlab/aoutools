@@ -72,13 +72,13 @@ def hail_context(tmp_path_factory):
     hl.stop()
 
 
-def _build_vds(local_encoding: bool) -> hl.vds.VariantDataset:
+def _build_vds() -> hl.vds.VariantDataset:
     """Builds the mock VDS from VARIANTS.
 
-    `_calculate_dosage` branches on whether the entries carry `GT` (indices into
-    the global `alleles` array) or `LGT`/`LA` (indices into a local-to-global
-    map). Real VDS versions differ on this, so both are built and every dosage
-    test runs against both.
+    Entries use the local (`LGT`/`LA`) encoding, which is what All of Us ships:
+    `LA` lists the global allele indices this sample uses, and `LGT` indexes
+    into `LA` rather than into `alleles`. `hl.vds.split_multi` converts it to a
+    plain `GT` before the scoring code sees it.
     """
     schema = hl.tstruct(
         locus_str=hl.tstr,
@@ -111,58 +111,42 @@ def _build_vds(local_encoding: bool) -> hl.vds.VariantDataset:
                 )
                 continue
 
+            # LA lists the global allele indices this sample uses; LGT indexes
+            # into LA. A no-call keeps LA (and GQ) defined, so the entry still
+            # exists -- which is what makes it different from S1's absence.
             global_gt = carriers[sample]
-            if local_encoding:
-                # LA lists the global allele indices this sample uses; LGT
-                # indexes into LA. A no-call keeps LA (and GQ) defined, so the
-                # entry still exists.
-                local_alleles = (
-                    [0] if global_gt is None else sorted({0, *global_gt})
-                )
-                local_gt = (
-                    None
-                    if global_gt is None
-                    else [local_alleles.index(i) for i in global_gt]
-                )
-                entries.append(
-                    {
-                        "locus_str": locus_str,
-                        "alleles": alleles,
-                        "s": sample,
-                        "gt": local_gt,
-                        "la": local_alleles,
-                        "GQ": 40,
-                        "END": None,
-                    }
-                )
-            else:
-                entries.append(
-                    {
-                        "locus_str": locus_str,
-                        "alleles": alleles,
-                        "s": sample,
-                        "gt": global_gt,
-                        "la": None,
-                        "GQ": 40,
-                        "END": None,
-                    }
-                )
+            local_alleles = (
+                [0] if global_gt is None else sorted({0, *global_gt})
+            )
+            local_gt = (
+                None
+                if global_gt is None
+                else [local_alleles.index(i) for i in global_gt]
+            )
+            entries.append(
+                {
+                    "locus_str": locus_str,
+                    "alleles": alleles,
+                    "s": sample,
+                    "gt": local_gt,
+                    "la": local_alleles,
+                    "GQ": 40,
+                    "END": None,
+                }
+            )
 
     ht = hl.Table.parallelize(entries, schema)
     ht = ht.annotate(
         locus=hl.parse_locus(ht.locus_str, reference_genome="GRCh38")
     )
-    call = hl.or_missing(hl.is_defined(ht.gt), hl.call(ht.gt[0], ht.gt[1]))
-    if local_encoding:
-        ht = ht.annotate(LGT=call, LA=ht.la)
-    else:
-        ht = ht.annotate(GT=call)
+    ht = ht.annotate(
+        LGT=hl.or_missing(hl.is_defined(ht.gt), hl.call(ht.gt[0], ht.gt[1])),
+        LA=ht.la,
+    )
     ht = ht.drop("gt", "la", "locus_str")
 
     mt = ht.to_matrix_table(row_key=["locus", "alleles"], col_key=["s"])
-    vds = hl.vds.VariantDataset.from_merged_representation(
-        mt, is_split=not local_encoding
-    )
+    vds = hl.vds.VariantDataset.from_merged_representation(mt, is_split=False)
     # Fail loudly on a malformed VDS rather than producing quiet nonsense.
     vds.validate()
     return vds
@@ -171,13 +155,7 @@ def _build_vds(local_encoding: bool) -> hl.vds.VariantDataset:
 @pytest.fixture(scope="session")
 def vds_lgt():
     """VDS with local (`LGT`/`LA`) genotype encoding -- what AoU ships."""
-    return _build_vds(local_encoding=True)
-
-
-@pytest.fixture(scope="session")
-def vds_gt():
-    """VDS with global (`GT`) genotype encoding."""
-    return _build_vds(local_encoding=False)
+    return _build_vds()
 
 
 @pytest.fixture(scope="session")

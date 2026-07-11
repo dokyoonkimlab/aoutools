@@ -105,57 +105,27 @@ class TestChunkProcessing:
         mock_mt.dosage.__mul__.return_value = 1.0
         return mock_mt
 
-    def test_calculate_prs_chunk_split_path(self, mocker):
+    def test_calculate_prs_chunk_prepares_and_aggregates(self, mocker):
         """
-        Tests that the split-multi preparation function is called when
-        config.split_multi is True.
+        Tests that the chunk calculator prepares the MatrixTable by splitting
+        multi-allelics and then aggregates it. There is only one scoring path;
+        the non-split alternative was removed (see `TODO.md`).
         """
-        # Arrange: Mock the internal preparation functions
+        # Arrange: Mock the internal preparation function
         mock_prepare_split = mocker.patch(
             "aoutools.prs._calculator._prepare_mt_split"
-        )
-        mock_prepare_non_split = mocker.patch(
-            "aoutools.prs._calculator._prepare_mt_non_split"
         )
 
         # Create a mock MatrixTable to be returned by the prep function
         mock_mt = self._get_mock_mt()
         mock_prepare_split.return_value = mock_mt
 
-        # Act: Call the chunk calculator with split_multi=True
-        config = PRSConfig(split_multi=True)
+        # Act
         _calculate_prs_chunk(
-            weights_table=MagicMock(), vds=MagicMock(), config=config
+            weights_table=MagicMock(), vds=MagicMock(), config=PRSConfig()
         )
 
         # Assert
         mock_prepare_split.assert_called_once()
-        mock_prepare_non_split.assert_not_called()
         # Verify that the final aggregation step was called on the mock mt
-        mock_mt.select_cols().cols.assert_called_once()
-
-    def test_calculate_prs_chunk_non_split_path(self, mocker):
-        """
-        Tests that the non-split preparation function is called when
-        config.split_multi is False.
-        """
-        # Arrange
-        mock_prepare_split = mocker.patch(
-            "aoutools.prs._calculator._prepare_mt_split"
-        )
-        mock_prepare_non_split = mocker.patch(
-            "aoutools.prs._calculator._prepare_mt_non_split"
-        )
-        mock_mt = self._get_mock_mt()
-        mock_prepare_non_split.return_value = mock_mt
-
-        # Act: Call the chunk calculator with split_multi=False
-        config = PRSConfig(split_multi=False)
-        _calculate_prs_chunk(
-            weights_table=MagicMock(), vds=MagicMock(), config=config
-        )
-
-        # Assert
-        mock_prepare_split.assert_not_called()
-        mock_prepare_non_split.assert_called_once()
         mock_mt.select_cols().cols.assert_called_once()

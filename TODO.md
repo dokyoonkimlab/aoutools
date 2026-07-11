@@ -11,8 +11,8 @@ The core findings were then **confirmed on the real All of Us VDS** with
 `notebooks/verify_hom_ref_dosage.ipynb`, run on the Workbench. Those numbers are
 quoted inline below — they are not from the mock.
 
-**No `aoutools/` code has been changed.** The findings are characterized, not
-fixed. The three tasks at the bottom are the agreed plan.
+**Task 1 is done: the non-split scoring path has been removed** (Findings 1-3 went
+with it). Tasks 2 and 3 are open, and Findings 4 and 5 are still live.
 
 ---
 
@@ -29,88 +29,21 @@ there are 113 entries where a dense matrix would hold 1,000 — ~89% of the geno
 stream is simply absent. This is the normal state of a VDS, not an edge case.
 (`test_hom_ref_samples_are_absent_from_the_entry_stream` pins it in the mock.)
 
-`_calculate_dosage` (`_calculator_utils.py:214`) opens with a branch that treats a
-missing genotype as homozygous reference — dosage `2` if the effect allele is REF —
-documented as *"accounting for sparse storage of homozygous reference calls"*.
-
-**That branch never sees a sparse hom-ref call.** It cannot: those entries are not
-in the stream. It fires for exactly one thing — an entry that *exists* with a
-missing genotype, i.e. a genuine **no-call**. It is precisely inverted from its
-stated purpose.
-
----
-
-## Finding 1 — non-split + effect allele on the REF loses every hom-ref sample
-
-**Severity: high. The only finding that moves rankings, not just absolute scores.**
-**Confirmed on All of Us.** Config: `split_multi=False` (any `strict_allele_match`).
-
-With a REF effect allele the score degenerates to *"how many heterozygous sites does
-this person have"*: a hom-ref sample carries 2 copies and is never visited (scores
-0), a hom-alt carries 0 and also scores 0.
-
-On the Workbench run, the error was exactly `2 × n_hom_ref` for every sample,
-ranging over `[4, 6, 8, 10]` — **per-sample and genotype-dependent, not an offset**.
-Sample `1000004` truly carries 8 copies and scored **0.0**; sample `1000774`,
-carrying 7, scored **3.0** and ranked above them. Spearman against truth < 1.
-
-Contrast the split path with `ref_is_effect_allele=True`: it computes `-w·n_alt`
-instead of `w·(2 - n_alt)`, off by `2w` per matched variant — but off by `2w` for
-**every sample including the hom-ref one**. The Workbench run gave `10.0` for all
-200 samples (`2w·K`, `w=1`, `K=5`): a single constant. Absolute scores shift,
-rankings survive. (`test_split_ref_is_effect_offsets_every_sample_equally`)
-
-So: the split path's offset is benign; the non-split path's is not.
-
----
-
-## Finding 2 — a no-call is scored as two copies of the reference
-
-**Severity: low — theoretical.** A `variant_data` entry that exists with a missing
-genotype is visited, the missing-genotype branch fires, and the sample is handed
-**2 copies** of the effect allele. An unknown genotype should be excluded, not
-imputed. (`test_non_split_scores_a_no_call_as_hom_ref`)
-
-**The Workbench run found 0 no-call entries out of 113.** AoU's `variant_data` does
-not appear to carry them, at least in that window. Real, but not currently biting.
-
----
-
-## Finding 3 — `strict_allele_match=False` scores variants the GWAS never studied
-
-**Severity: medium.** Requires opting out of two safe defaults (`_config.py:70-72`).
-
-The dosage arithmetic is **not** wrong — `_calculate_dosage` string-matches the
-effect allele truthfully. What is lost is **variant identity**. With
-`strict_allele_match=False` there is no allele check at all; the only filter is
-`hl.is_defined(mt.weights_info)` on a locus-only join. And `effect_allele ==
-alleles[0]` is satisfied by *any* variant at that locus, because the reference base
-is the same string whichever ALT is there.
-
-Weights say `chr1:3000`, effect `A`, noneffect `G` — an A/G SNP. The VDS has an
-**A/T** SNP there; the A/G SNP does not exist. A sample who is A/T picks up one
-copy of `A`, purely because of an unrelated `T` genotype. The weight was estimated
-for an A-vs-G contrast. Per-sample noise, so it perturbs rankings.
-(`test_non_split_loose_scores_a_variant_the_gwas_never_studied`)
-
-The mirror case fails safe: effect allele is an ALT that isn't present → dosage 0 →
-no contribution, though the row still counts in `n_matched`.
-
-If a GWAS names an A/G SNP and AoU has no such variant, the likely cause is a **bad
-weights row** — strand flip (no strand harmonization exists anywhere; palindromic
-A/T and C/G are undetected), build mismatch, bad rsID→allele mapping — not a gap in
-a callset that size. Dropping the row, which strict does, is the right action.
+The practical consequence, and the thing to keep in mind for Task 2: **you cannot
+give a hom-ref sample a dosage by handling a missing genotype.** It has no entry to
+handle. Anything a hom-ref sample must contribute has to arrive as a *row-level
+constant*, applied to every sample regardless of genotype.
 
 ---
 
 ## Finding 4 — `ref_is_effect_allele` is a file-level flag for a row-level property
 
-**Severity: high. Confirmed against the PGS Catalog format spec.**
+**Severity: high. Live. Confirmed against the PGS Catalog format spec.**
 
-The split path builds its `(locus, alleles)` join key from a **global** flag, but
-allele orientation is a **per-row** property. Every weights row whose orientation
-disagrees with the flag produces a key that does not exist in the VDS and is
-**silently dropped** — not scored, and not even counted in `n_matched`.
+The join key is built from a **global** flag, but allele orientation is a **per-row**
+property. Every weights row whose orientation disagrees with the flag produces a key
+that does not exist in the VDS and is **silently dropped** — not scored, and not even
+counted in `n_matched`.
 
 The assumption that PGS Catalog files are harmonized so that effect = ALT is
 **false**. Their format spec says of `effect_allele`:
@@ -128,13 +61,21 @@ size was estimated for (usually risk-increasing or minor), while REF/ALT is a
 property of the reference assembly. The two disagree wherever the reference carries
 the minor allele. On the 5-row mock file, the flag off matches 2 rows and on matches
 1 — **no setting scores them all**, and the score still comes out a clean float.
-(`test_split_silently_drops_rows_of_the_opposite_orientation`)
+(`test_silently_drops_rows_of_the_opposite_orientation`)
+
+Related, same fix: with `ref_is_effect_allele=True` the code computes `-w·n_alt`
+where the truth is `w·(2 - n_alt)`, so every score is short by a constant `2w` per
+matched variant. The Workbench run gave `10.0` for all 200 samples (`2w·K`, `w=1`,
+`K=5`) — **a single constant**, identical for every sample including the hom-ref one.
+Absolute scores shift; rankings survive. That invariant is what makes the bug
+tolerable, and it is asserted directly
+(`test_ref_is_effect_offsets_every_sample_equally`).
 
 ---
 
 ## Finding 5 — the 1bp interval prefilter defeats the split path's own minrep
 
-**Severity: medium-high. Newly found; no test covers it yet.**
+**Severity: medium-high. Live; no test covers it yet.**
 
 `hl.vds.split_multi` applies `hl.min_rep`, which can **move the locus**. Verified on
 real hail:
@@ -146,18 +87,20 @@ minrep of chr1:1000 [AGG, AG, AGT]:
 ```
 
 A GWAS reports that SNP at its normalized position, chr1:**1002**. But
-`_create_1bp_intervals` (`_calculator_utils.py:355`) builds the interval at the
+`_create_1bp_intervals` (`_calculator_utils.py`) builds the interval at the
 **weights** locus, and `hl.vds.filter_intervals` runs on the **unsplit** VDS
-(`_calculator.py:253-258`) — *before* `split_multi` (`_calculator.py:62`), where the
-row still sits at chr1:1000:
+(`_calculator.py`) — *before* `split_multi`, where the row still sits at chr1:1000:
 
 ```
 1bp interval [chr1:1002] -> VDS rows kept: 0    <-- the row lives at 1000
 1bp interval [chr1:1000] -> VDS rows kept: 1
 ```
 
-The variant is discarded before `split_multi` can normalize it. `_calculator.py:336-344`
-explicitly claims this matching works. It does not.
+The variant is discarded before `split_multi` can normalize it.
+
+Note the limit of this: minrep only shifts the locus when the two alleles share a
+**leading** base. VDS alleles `['AGGGC', 'A', 'GGGGC']` minrep to `['A', 'G']` at
+the *same* locus, and that variant matches fine. Only the shared-prefix case is lost.
 
 Two faces:
 
@@ -173,54 +116,62 @@ Two faces:
 
 ---
 
-## How each config counts the effect allele (current behavior)
+## How scoring behaves today
 
-| config | effect = **ALT** rows | effect = **REF** rows |
-|---|---|---|
-| `split=True, ref_is_effect=False` (default) | correct: `+w·n_alt` | **silently dropped** (Finding 4) |
-| `split=True, ref_is_effect=True` | **silently dropped** (Finding 4) | `-w·n_alt`; flat `Σ2w` offset, rankings safe |
-| `split=False, strict=True` | correct | **hom-ref samples lost → reorders people** (Finding 1) |
-| `split=False, strict=False` | correct if the variant is real; 0 if not (fails safe) | same reordering, **plus** phantom variants (Finding 3) |
+One path. `hl.vds.split_multi` splits multi-allelic sites, the weights are joined on
+`(locus, alleles)` — so the join key *is* the allele check — and dosage is
+`GT.n_alt_alleles()`.
 
-In every config, a sample absent from `variant_data` contributes nothing, and any
-variant whose minrep shifts its locus is dropped before scoring (Finding 5).
-`n_matched` counts rows that survived the row filter, so under `strict=False` a row
-contributing dosage 0 still counts as "matched" — it over-reports overlap.
+| weights row | behavior |
+|---|---|
+| effect allele on the **ALT** | correct: `+w·n_alt`; hom-ref contributes 0, as it should |
+| effect allele on the **REF** | **dropped** unless `ref_is_effect_allele=True`, in which case scored as `-w·n_alt` with a uniform `2w` offset (Finding 4) |
+| variant not in the VDS | dropped for everyone; the join key enforces identity |
+| no-call entry | contributes nothing — `GT` is missing and `hl.agg.sum` skips it |
+| minrep shifts the locus | **silently missed** (Finding 5) |
 
 ---
 
-## The plan: three tasks
+## The plan
 
-### Task 1 — remove the non-split path
+### ~~Task 1 — remove the non-split path~~ (done)
 
-Delete `split_multi` and `strict_allele_match` from `PRSConfig`, and with them
-`_prepare_mt_non_split`, `_calculate_dosage` (both `GT` and `LGT`/`LA` branches),
-`_check_allele_match`, and the batch gates (`_calculator_batch.py:141,194,246`).
+`split_multi` and `strict_allele_match` are gone from `PRSConfig`, along with
+`_prepare_mt_non_split`, `_calculate_dosage`, `_check_allele_match`, and the batch
+gates. Passing either knob is now a `TypeError`
+(`tests/prs/test_config.py::test_removed_non_split_params_are_rejected`).
 
-**Kills Findings 1, 2, and 3 outright**, and removes a second dosage implementation
-that has to be kept in sync with the first.
+This removed three findings outright:
 
-Why removal rather than repair — the non-split path is not merely "faster but less
-robust":
+- **Finding 1 (high, ranking-corrupting).** With the effect allele on the REF base,
+  the non-split score degenerated to *"how many heterozygous sites does this person
+  have"* — a hom-ref sample carries 2 copies and was never visited, a hom-alt carries
+  0 and also scored 0. On the Workbench run the error was exactly `2 × n_hom_ref`,
+  ranging over `[4, 6, 8, 10]` across samples: **per-sample and genotype-dependent,
+  not an offset.** Sample `1000004` truly carried 8 copies and scored **0.0**; sample
+  `1000774`, carrying 7, scored **3.0** and ranked above them. Spearman against truth
+  was < 1.
+- **Finding 2 (low, theoretical).** A no-call entry — genotype present but unknown —
+  was handed 2 copies of the effect allele. The Workbench run found 0 no-call entries
+  out of 113, so this was never biting in practice. Now impossible:
+  `test_does_not_invent_a_genotype_for_a_no_call`.
+- **Finding 3 (medium).** `strict_allele_match=False` did no allele check at all, so
+  a weights row was scored against whatever variant occupied its coordinate — the
+  effect allele matching the REF base is satisfied by *any* variant at that locus.
 
-- It does **no normalization at all**. String-matching a GWAS `G/T` row against VDS
-  alleles `[AGG, AG, AGT]` can never match, at any interval width. On this class of
-  variant it is not slower-but-equivalent; it is incapable.
-- It owns the only bug that reorders a cohort.
-- The speed advantage is undocumented and unmeasured. `hl.vds.split_multi` is a
-  per-row explode, not a shuffle.
+Removal rather than repair, because the non-split path was not merely "faster but
+less robust": it did **no normalization at all**, so a GWAS `G/T` row could never
+match VDS alleles `[AGG, AG, AGT]` at any interval width. It was incapable, not just
+slower. Its speed advantage was never measured.
 
-Rewrite the integration tests that currently pin Findings 1/2/3 as removal proofs.
-Self-contained; unblocked.
+**Note:** removing it did **not** gain the multi-allelic matching described in
+Finding 5 — the split path drops those variants too, for a different reason. That
+arrives only with Task 3.
 
-**Note:** removing this path does **not** by itself gain the multi-allelic matching
-described above — Finding 5 means the split path drops those variants too, for a
-different reason. That gain arrives only with Task 3.
+### Task 2 — fix allele orientation (Finding 4)
 
-### Task 2 — fix allele orientation on the split path
-
-Remove `ref_is_effect_allele` entirely. It is a global flag standing in for a
-per-row property (Finding 4).
+Remove `ref_is_effect_allele` entirely. It is a global flag standing in for a per-row
+property.
 
 Post-`split_multi` rows are biallelic, so:
 
@@ -232,17 +183,19 @@ Post-`split_multi` rows are biallelic, so:
 
 The algebra: the true contribution of a REF-effect row is `w·(2 − n_alt) = 2w −
 w·n_alt`. The `−w·n_alt` term is **already correct for absent samples** (`n_alt = 0`
-→ 0), so the aggregator skipping them costs nothing. Only the `2w` is missing, and
-it does not depend on genotype — it is a row-level scalar.
+→ 0), so the aggregator skipping them costs nothing. Only the `2w` is missing, and it
+does not depend on genotype — it is a row-level scalar.
 
 The correction is a **rows-only aggregation** over already-filtered rows: no
-densification, no second entry pass, no extra VDS read. This supersedes the earlier
-belief that fixing the offset required an expensive densify.
+densification, no second entry pass, no extra VDS read.
 
 Result: mixed-orientation weights files score every row, the `2w` offset is gone, and
-two config knobs disappear.
+another config knob disappears.
 
-### Task 3 — Finding 5: the interval prefilter
+When this lands, `test_ref_is_effect_offsets_every_sample_equally` should be rewritten
+to assert the scores equal the truth outright.
+
+### Task 3 — the interval prefilter (Finding 5)
 
 **Prelude (do this first): confirm on the real AoU VDS, in a notebook.** Everything
 below is sized by the answer, and the mock cannot tell us the rate. Measure:
@@ -253,27 +206,31 @@ below is sized by the answer, and the mock cannot tell us the rate. Measure:
    and how many of those are explained by a locus-shifted multi-allelic sitting
    upstream within N bp? Sweep N to pick a pad width empirically.
 3. Does any weights locus land exactly on the start of such a multi-allelic — i.e.
-   is the `filter_changed_loci=False` crash reachable on real data?
+   is the `filter_changed_loci=False` crash reachable on real data? (The user has
+   never hit it, which is consistent with the prefilter hiding it.)
 
 Then implement: left-pad the intervals in `_create_1bp_intervals` by the measured
 width so the padded multi-allelic survives to `split_multi`, and settle
 `filter_changed_loci` (widening the intervals makes the crash *more* reachable, not
-less — a variant that shifts out of its interval must be handled deliberately, not
-by an exception). Padding costs VDS read, which is real money on this dataset, so
-the width must be justified by (2), not guessed.
-
-Blocked on nothing, but do it after Tasks 1–2 so it lands on the simplified code.
+less — a variant that shifts out of its interval must be handled deliberately, not by
+an exception). Padding costs VDS read, which is real money on this dataset, so the
+width must be justified by (2), not guessed.
 
 ---
 
 ## Other open items
 
+- **Release note.** The removal changes every previously computed score, in two
+  different ways, and users need to be told which applies to them. On the split path,
+  absolute scores shift but the **old rankings were right**. On the removed non-split
+  path with REF-effect weights, the **rankings themselves were wrong** and anything
+  downstream needs redoing. That distinction is the difference between "your numbers
+  moved" and "your result was wrong" — say it plainly, do not soften it.
 - **`main` is behind `dev`.** All current work is on `dev`. Clean fast-forward
   whenever wanted.
 - **No strand harmonization exists anywhere.** Weights are assumed to be on the same
-  strand and build as the VDS. Palindromic variants (A/T, C/G) are undetected. Out
-  of scope for the three tasks, but it is the most likely cause of a non-matching
-  weights row.
+  strand and build as the VDS. Palindromic variants (A/T, C/G) are undetected. Out of
+  scope for Tasks 2-3, but it is the most likely cause of a non-matching weights row.
 - **`_standardize_chromosome_column` and scaffold contigs.** The vectorized rewrite
   (`0c6f467`) prefixes every unprefixed contig, so GRCh38 scaffold/alt contigs
   (`KI270728.1`) become `chrKI270728.1` and make `hl.locus` throw. Fails loudly, and

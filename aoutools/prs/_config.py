@@ -42,18 +42,9 @@ optional
         should be used only when necessary.
     sample_id_col : str, default 'person_id'
         The column name to use for sample IDs in the final output table.
-    split_multi : bool, default True
-        If True, splits multi-allelic variants in VDS into bi-allelic variants
-        prior to calculation.
     ref_is_effect_allele : bool, default False
         If True, assumes effect allele in weights file corresponds to reference
-        allele in VDS. Used only when `split_multi` is True.
-    strict_allele_match : bool, default True
-        Used only when `split_multi` is False. If True, enforces that one
-        allele in weights table matches reference allele in VDS and other
-        allele is a valid alternate. If False, only effect allele is checked to
-        correspond to either reference or alternate allele, and other allele is
-        not verified.
+        allele in VDS.
     detailed_timings : bool, default False
         If True, logs timing information for each major step. Helpful for
         diagnosing performance issues.
@@ -67,7 +58,5 @@ optional
     log_transform_weight: bool = False
     include_n_matched: bool = False
     sample_id_col: str = "person_id"
-    split_multi: bool = True
     ref_is_effect_allele: bool = False
-    strict_allele_match: bool = True
     detailed_timings: bool = False
