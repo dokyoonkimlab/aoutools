@@ -33,6 +33,24 @@ isolated, managed environment.
 This method allows you to use both the ``dsub`` job scheduler and the
 ``download_pgs`` function in the same project without any dependency conflicts.
 
+Requirements and Operational Notes
+----------------------------------
+
+Because the isolated environment is built on demand, the **first** call to
+``download_pgs`` in a session has a few requirements to be aware of:
+
+- **Network access**: the first call installs ``pgscatalog.core`` from PyPI,
+  and every call downloads score files from the PGS Catalog.
+- **Writable home directory**: the environment is created under your home
+  directory (see below), so that location must be writable.
+- **One-time setup delay**: building the environment adds a short delay to the
+  first call only. Subsequent calls reuse the cached environment and start
+  immediately.
+
+If the cached environment ever becomes corrupted, or you want to force a fresh
+install of ``pgscatalog.core``, simply delete the environment directory (by
+default ``~/.aoutools/pgscatalog_env``); it will be rebuilt on the next call.
+
 Customizing the Virtual Environment Path
 ----------------------------------------
 

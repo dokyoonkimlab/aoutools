@@ -223,6 +223,22 @@ def download_pgs(
         If none of pgs, efo, or pgp are provided.
     Exception
         On download or upload failure.
+
+    Notes
+    -----
+    The first call in a session provisions an isolated Python virtual
+    environment and ``pip install``\\ s ``pgscatalog.core`` into it, to avoid a
+    ``tenacity`` version conflict between ``pgscatalog.core`` and ``dsub``.
+    Consequently the first call:
+
+    - requires **network access** and a **writable home directory**, and
+    - incurs a one-time setup delay while the environment is built.
+
+    Subsequent calls reuse the cached environment and skip this step. The
+    environment lives at ``~/.aoutools/pgscatalog_env`` by default; set the
+    ``AOUTOOLS_PGS_ENV_DIR`` environment variable (before the first call) to
+    relocate it. To force a rebuild, delete that directory. See the
+    "Using the ``download_pgs`` function" how-to guide for details.
     """
     pgs_args = _normalize_arg(pgs)
     efo_args = _normalize_arg(efo)
