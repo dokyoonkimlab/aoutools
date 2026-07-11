@@ -1,11 +1,14 @@
 name: CI
 
+# `docs/**` is deliberately NOT ignored: the docs job builds with -W, and an
+# autodoc break can come from either a docs change or a code change, so both
+# must trigger CI. Only prose (*.md) is skipped.
 on:
   push:
     branches: [main, dev]
-    paths-ignore: ['**.md', 'docs/**']
+    paths-ignore: ['**.md']
   pull_request:
-    paths-ignore: ['**.md', 'docs/**']
+    paths-ignore: ['**.md']
 
 # Cancel superseded runs on the same ref to save CI minutes.
 concurrency:
@@ -31,6 +34,25 @@ jobs:
       # Checks only; never writes. Use `pixi run format` locally to fix.
       - name: Ruff lint + format check
         run: pixi run -e lint lint
+
+  # Builds with -W (see docs/Makefile). Sphinx mocks hail, so a hail-typed
+  # annotation that cannot be evaluated under the mock fails the import, and
+  # autodoc would otherwise emit a warning and publish an empty API reference.
+  docs:
+    name: Docs (sphinx -W)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up pixi (default environment)
+        uses: prefix-dev/setup-pixi@v0.10.0
+        with:
+          pixi-version: v0.70.2
+          environments: default
+          cache: true
+
+      - name: Build docs
+        run: pixi run docs
 
   test:
     name: Tests (linux-64)

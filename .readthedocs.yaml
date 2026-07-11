@@ -10,9 +10,11 @@ python:
   install:
     - method: pip
       path: .
-      extra_requirements:
-        - pgs  # optional, only if you want docs with this extra
     - requirements: docs/requirements.txt
 
 sphinx:
   configuration: docs/source/conf.py
+  # Read the Docs does not use the Makefile, so -W has to be set here too.
+  # autodoc downgrades a failed import to a warning and renders an empty page,
+  # which would otherwise publish an API reference with no content.
+  fail_on_warning: true

@@ -3,7 +3,11 @@
 
 # You can set these variables from the command line, and also
 # from the environment for the first two.
-SPHINXOPTS    ?=
+# -W turns warnings into errors. autodoc reports a failed import as a *warning*
+# and then renders an empty page, so without -W a build can "succeed" (exit 0)
+# while silently dropping the entire API reference. --keep-going still reports
+# every warning rather than stopping at the first.
+SPHINXOPTS    ?= -W --keep-going
 SPHINXBUILD   ?= sphinx-build
 SOURCEDIR     = source
 BUILDDIR      = build
