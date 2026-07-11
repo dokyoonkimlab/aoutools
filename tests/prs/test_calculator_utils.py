@@ -10,7 +10,10 @@ from unittest.mock import MagicMock
 import pytest
 
 from aoutools.prs import PRSConfig
-from aoutools.prs._calculator_utils import _validate_and_prepare_weights_table
+from aoutools.prs._calculator_utils import (
+    _orient_weights_for_split,
+    _validate_and_prepare_weights_table,
+)
 
 
 class TestValidateAndPrepareWeightsTable:
@@ -99,3 +102,91 @@ class TestValidateAndPrepareWeightsTable:
             TypeError, match="Weights table is missing required column: 'pos'"
         ):
             _validate_and_prepare_weights_table(mock_weights_table, PRSConfig())
+
+
+class TestOrientWeightsForSplit:
+    """
+    Tests for `_orient_weights_for_split`, which sets allele orientation on the
+    split-multi path.
+
+    This is the highest-risk function in the library: it decides which allele
+    the weight applies to. Get it wrong and every score is still a clean,
+    plausible float -- just inverted. Nothing else catches that.
+
+    `config.ref_is_effect_allele` is a plain Python bool, so `hl.if_else` here
+    is a branch selection on a real value. The mock below reproduces that
+    semantic, which lets these tests assert the orientation and sign actually
+    produced rather than merely that `hl.if_else` was called.
+    """
+
+    def _orient(self, mocker, *, ref_is_effect_allele):
+        """Runs the function under test and returns (table, annotate kwargs)."""
+        mock_hl = mocker.patch("aoutools.prs._calculator_utils.hl", MagicMock())
+        mock_hl.if_else.side_effect = (
+            lambda cond, if_true, if_false: if_true if cond else if_false
+        )
+
+        mock_table = MagicMock()
+        mock_table.annotate.return_value = mock_table
+        mock_table.key_by.return_value = mock_table
+
+        config = PRSConfig(ref_is_effect_allele=ref_is_effect_allele)
+        _orient_weights_for_split(mock_table, config)
+
+        return mock_table, mock_table.annotate.call_args.kwargs
+
+    def test_effect_allele_is_alt_keeps_weight_sign(self, mocker):
+        """
+        Default case: the effect allele is the ALT allele.
+
+        Dosage on the split path is `GT.n_alt_alleles()`, i.e. a count of ALT
+        copies, so the effect allele belongs in the ALT slot and the weight is
+        used as-is.
+        """
+        table, kwargs = self._orient(mocker, ref_is_effect_allele=False)
+
+        assert kwargs["alleles"] == [
+            table.noneffect_allele,
+            table.effect_allele,
+        ]
+        assert kwargs["weight"] is table.weight
+
+    def test_ref_is_effect_allele_puts_effect_in_ref_and_negates_weight(
+        self, mocker
+    ):
+        """
+        `ref_is_effect_allele=True`: the effect allele is the REF allele.
+
+        The effect allele moves to the REF slot, so `GT.n_alt_alleles()` now
+        counts the *noneffect* allele. The weight is negated to compensate:
+        the contribution becomes `-w * n_alt` instead of the true
+        `w * n_effect = w * (2 - n_alt)`.
+
+        These differ by a constant `2w` per matched variant. Rows are filtered
+        identically for every sample, so that constant is shared across samples
+        and rankings/standardized scores are preserved -- but absolute scores
+        are offset. Dropping the negation flips the sign of the sample-varying
+        term, which inverts the score (highest genetic risk scores lowest)
+        while still producing a perfectly plausible distribution.
+        """
+        table, kwargs = self._orient(mocker, ref_is_effect_allele=True)
+
+        assert kwargs["alleles"] == [
+            table.effect_allele,
+            table.noneffect_allele,
+        ]
+        # `-table.weight`; identity is stable across accesses on a MagicMock.
+        assert kwargs["weight"] is table.weight.__neg__.return_value
+        assert kwargs["weight"] is not table.weight
+
+    @pytest.mark.parametrize("ref_is_effect_allele", [True, False])
+    def test_keys_by_locus_and_alleles(self, mocker, ref_is_effect_allele):
+        """
+        The split path joins the weights to the MatrixTable on
+        (locus, alleles); keying on anything else silently drops every variant.
+        """
+        table, _ = self._orient(
+            mocker, ref_is_effect_allele=ref_is_effect_allele
+        )
+
+        table.key_by.assert_called_once_with("locus", "alleles")
