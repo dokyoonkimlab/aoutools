@@ -24,8 +24,12 @@ class TestValidateAndPrepareWeightsTable:
         This handles the complex setup required to mock chained method
         calls and dynamic property access (like `.dtype`).
         """
-        # Mock the entire hail module (hl) to control its behavior
+        # Mock the entire hail module (hl) to control its behavior. Patch it in
+        # both modules that touch the table: `_calculator_utils` (this function)
+        # and `_utils` (where `_standardize_chromosome_column` lives), otherwise
+        # the latter's `hl.str(...)` would hit real hail's typecheck on a mock.
         mock_hl = mocker.patch('aoutools.prs._calculator_utils.hl', MagicMock())
+        mocker.patch('aoutools.prs._utils.hl', MagicMock())
 
         # Create the main mock object for the Hail Table
         mock_table = MagicMock()
@@ -39,11 +43,6 @@ class TestValidateAndPrepareWeightsTable:
 
         # Configure simple method return values
         mock_table.count.return_value = 1
-
-        # By returning a value that already starts with 'chr', we prevent
-        # the function from entering the `if not str(sample_chr).startswith('chr')`
-        # block, which contains the problematic Hail expression.
-        mock_table.select('chr').take.return_value = [MagicMock(chr='chr1')]
 
         # We define a "side effect" function that dynamically creates a mock
         # column with the correct .dtype when the table is accessed via
