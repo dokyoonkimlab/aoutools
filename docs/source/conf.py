@@ -18,7 +18,8 @@ import os
 import sys
 
 sys.path.insert(0, os.path.abspath('../..'))
-# Mock heavy imports for autodoc to avoid installing large/system-specific packages
+# Mock heavy imports for autodoc to avoid installing large/system-specific
+# packages
 autodoc_mock_imports = [
     "hail",
     "hailtop",

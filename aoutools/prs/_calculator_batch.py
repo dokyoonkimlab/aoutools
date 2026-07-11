@@ -430,7 +430,7 @@ def calculate_prs_batch(
     weights_tables_map: dict[str, hl.Table],
     vds: hl.vds.VariantDataset,
     output_path: str,
-    config: PRSConfig = PRSConfig(),
+    config: PRSConfig | None = None,
 ) -> str | None:
     """
     Calculates multiple Polygenic Risk Scores (PRS) concurrently using a
@@ -472,6 +472,9 @@ def calculate_prs_batch(
     --------
     PRSConfig : A configuration class that holds parameters for PRS calculation.
     """
+    # PRSConfig is mutable, so a shared default instance would leak state
+    # across calls; build a fresh one per call instead.
+    config = PRSConfig() if config is None else config
 
     timer = SimpleTimer()
     with timer:

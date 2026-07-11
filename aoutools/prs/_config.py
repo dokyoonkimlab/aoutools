@@ -3,6 +3,12 @@ This module defines a configuration class for Polygenic Risk Score (PRS)
 calculation.
 """
 
+# Annotations are strings, never evaluated at import. Required because Sphinx
+# mocks `hail` when building the docs, and a mocked `hl.Table` does not support
+# the PEP 604 `|` operator -- evaluating these annotations eagerly would break
+# autodoc (real hail is unaffected).
+from __future__ import annotations
+
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -19,7 +25,8 @@ class PRSConfig:
     ----------
     chunk_size : int, default 20000
         The number of variants to include in each processing chunk.
-    samples_to_keep : Union[hl.Table, Sequence[str], Sequence[int], str, int], optional
+    samples_to_keep : hl.Table | Sequence[str] | Sequence[int] | str | int, \
+optional
         A collection of sample IDs to keep. Accepts a Hail Table, or a Python
         list, set, tuple of strings or integers, or a single string or integer.
         If None, all samples are retained.
@@ -52,7 +59,9 @@ class PRSConfig:
         diagnosing performance issues.
     """
     chunk_size: int = 20000
-    samples_to_keep: hl.Table | Sequence[str] | Sequence[int] | str | int | None = None
+    samples_to_keep: (
+        hl.Table | Sequence[str] | Sequence[int] | str | int | None
+    ) = None
     weight_col_name: str = 'weight'
     log_transform_weight: bool = False
     include_n_matched: bool = False

@@ -6,7 +6,8 @@ from ._calculator import (
     calculate_prs,
 )
 
-# Import the main batch calculator functions from the internal _calculator_batch.py module
+# Import the main batch calculator functions from the internal
+# _calculator_batch.py module
 from ._calculator_batch import (
     calculate_prs_batch,
 )

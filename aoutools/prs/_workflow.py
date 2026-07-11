@@ -23,7 +23,7 @@ def calculate_pgs(
     output_path: str,
     pgs: Iterable[str] | str,
     build: str | None = "GRCh38",
-    config: PRSConfig = PRSConfig(),
+    config: PRSConfig | None = None,
     user_agent: str | None = None,
     verbose: bool = False,
 ) -> str | None:
@@ -79,6 +79,10 @@ def calculate_pgs(
         If the download process fails due to network issues, invalid PGS IDs,
         or other errors from the underlying `pgscatalog-download` tool.
     """
+    # PRSConfig is mutable, so a shared default instance would leak state
+    # across calls; build a fresh one per call instead.
+    config = PRSConfig() if config is None else config
+
     # Define the column mapping for standard PGS Catalog scoring files
     pgs_column_map = {
         'chr': 'hm_chr',
@@ -131,7 +135,8 @@ def calculate_pgs(
                 weights_tables_map[score_name] = weights_table
             except (ValueError, TypeError) as e:
                 logger.warning(
-                    "Could not read scoring file for '%s'. Skipping. Error: %s. "
+                    "Could not read scoring file for '%s'. Skipping. "
+                    "Error: %s. "
                     "Please check the format of the downloaded file; some "
                     "scoring files may contain variants without positional "
                     "information (e.g., HLA types) or with incomplete effect "

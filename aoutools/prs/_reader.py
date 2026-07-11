@@ -49,7 +49,8 @@ def _validate_alleles(
     n_removed = initial_count - final_count
     if n_removed > 0:
         logger.warning(
-            "Removed %d variants with invalid alleles (non-ACGT characters found).",
+            "Removed %d variants with invalid alleles "
+            "(non-ACGT characters found).",
             n_removed
         )
 
@@ -271,7 +272,8 @@ def _read_prs_weights_noheader(
         other_fields = [f for f in all_f_fields if f not in used_f_fields]
         new_names = [f'non_req_col_{i+1}' for i, _ in enumerate(other_fields)]
         other_cols_exprs = {
-            new: table[old] for new, old in zip(new_names, other_fields)
+            new: table[old]
+            for new, old in zip(new_names, other_fields, strict=True)
         }
 
     table = table.select(**standard_cols_exprs, **other_cols_exprs)
@@ -426,7 +428,8 @@ def read_prs_weights(
         A path to the weight file (local or gs://).
     header : bool
         If True, `column_map` values should be strings (column names).
-        If False, `column_map` values should be 1-based integers (column indices).
+        If False, `column_map` values should be 1-based integers (column
+        indices).
     column_map : dict
         A dictionary mapping standard names to user-defined names or indices.
         Must contain the keys: 'chr', 'pos', 'effect_allele',

@@ -1,5 +1,9 @@
 """Internal utilities for the PRS calculator"""
 
+# See the note in _config.py: mocked hail (docs builds) cannot evaluate the
+# PEP 604 `|` in these annotations, so defer them.
+from __future__ import annotations
+
 import logging
 from math import ceil
 
@@ -163,7 +167,8 @@ def _orient_weights_for_split(
 
     See also
     --------
-    PRSConfig : A configuration class that specifies allele orientation settings.
+    PRSConfig : A configuration class that specifies allele orientation
+        settings.
     """
     return ht.annotate(
         alleles=hl.if_else(

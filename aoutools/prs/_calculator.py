@@ -335,7 +335,7 @@ def calculate_prs(
     weights_table: hl.Table,
     vds: hl.vds.VariantDataset,
     output_path: str,
-    config: PRSConfig = PRSConfig()
+    config: PRSConfig | None = None
 ) -> str | None:
     """
     Calculates a Polygenic Risk Score (PRS) and exports the result to a file.
@@ -410,6 +410,10 @@ def calculate_prs(
     --------
     PRSConfig : A configuration class that holds parameters for PRS calculation.
     """
+    # PRSConfig is mutable, so a shared default instance would leak state
+    # across calls; build a fresh one per call instead.
+    config = PRSConfig() if config is None else config
+
     timer = SimpleTimer()
     with timer:
         if not output_path.startswith('gs://'):
