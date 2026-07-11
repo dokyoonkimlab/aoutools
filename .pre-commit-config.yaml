@@ -1,0 +1,35 @@
+# Pre-commit hooks for aoutools.
+# Install once after `pixi install`:  pixi run setup-hooks
+# Run manually against everything:    pixi run lint
+#
+# The ruff hooks are `language: system`, i.e. they use the ruff from the pixi
+# env (kept active by direnv) rather than a second, separately-pinned copy.
+# Config for both lives in [tool.ruff] in pyproject.toml.
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-added-large-files
+        args: ["--maxkb=10240"] # 10 MB
+      - id: detect-private-key
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+
+  - repo: local
+    hooks:
+      - id: ruff-format
+        name: ruff format
+        entry: ruff format --force-exclude
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+      - id: ruff-check
+        name: ruff lint (autofix)
+        entry: ruff check --fix --force-exclude
+        language: system
+        types_or: [python, pyi]
+        require_serial: true

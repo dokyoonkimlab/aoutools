@@ -52,6 +52,22 @@ Documentation = "https://aoutools.readthedocs.io"
 [tool.setuptools.package-data]
 aoutools = ["data/*"]
 
+# Ruff is both the formatter and the linter. 80 cols matches the wrapping the
+# codebase already uses.
+[tool.ruff]
+line-length = 80
+
+[tool.ruff.lint]
+# E/W: pycodestyle. F: real errors (undefined names, unused imports).
+# I: import sorting. UP: pyupgrade (safe — requires-python is >=3.10).
+# B: bugbear (mutable/shared default args, zip() without strict=, ...).
+select = ["E", "W", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# Sphinx's conf.py must call sys.path.insert() before importing, which is
+# exactly what E402 (module-import-not-at-top-of-file) complains about.
+"docs/source/conf.py" = ["E402"]
+
 [tool.pixi.workspace]
 channels = ["conda-forge", "bioconda"]
 platforms = ["osx-arm64", "linux-64"]
@@ -63,6 +79,11 @@ aoutools = { path = ".", editable = true }
 docs = "make -C docs html"
 undocs = "make -C docs clean"
 test = "pytest -v"
+# Lint/format. `lint` is what CI runs, so it must not modify files.
+lint = "ruff check . && ruff format --check ."
+format = "ruff format . && ruff check --fix ."
+# One-time per clone, after `pixi install`: install the git pre-commit hook.
+setup-hooks = "pre-commit install"
 
 # Runtime dependencies only.
 # Versions are aligned to the All of Us Researcher Workbench genomics runtime:
@@ -84,6 +105,13 @@ pytest = ">=8.4.1,<9"
 pytest-mock = ">=3.14.1,<4"
 python-build = ">=1.3.0,<2"
 twine = ">=6.1.0,<7"
+ruff = ">=0.14,<0.15"
+pre-commit = ">=4,<5"
+
+# Lean feature for the CI lint job: ruff and nothing else, so linting doesn't
+# pay for sphinx/mypy/twine. Config lives in [tool.ruff] above.
+[tool.pixi.feature.lint.dependencies]
+ruff = ">=0.14,<0.15"
 
 # CI feature: the test suite mocks hail but still needs it importable, so the
 # real library is installed. hail is pinned to the version used on the AoU
@@ -112,7 +140,9 @@ numpy = "==2.0.2"
 pandas = "==2.3.0"
 google-cloud-storage = "==2.13.0"
 
-# Default is the dev environment; ci is a lean linux-64 environment for tests.
+# Default is the dev environment; ci is a lean linux-64 environment for tests;
+# lint is a ruff-only environment for the CI lint job.
 [tool.pixi.environments]
 default = { features = ["dev"], solve-group = "default" }
 ci = { features = ["ci"] }
+lint = { features = ["lint"], no-default-feature = true }
