@@ -4,12 +4,12 @@ Unit tests for the `_calculator_utils.py` submodule.
 These tests use mocking to isolate the functions from any real Hail/Spark
 dependencies, allowing for fast and portable execution.
 """
-import pytest
 from unittest.mock import MagicMock
-from aoutools.prs._calculator_utils import (
-    _validate_and_prepare_weights_table
-)
+
+import pytest
+
 from aoutools.prs import PRSConfig
+from aoutools.prs._calculator_utils import _validate_and_prepare_weights_table
 
 
 class TestValidateAndPrepareWeightsTable:

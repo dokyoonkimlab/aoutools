@@ -6,6 +6,7 @@ same directory or subdirectories, without needing to be imported.
 """
 
 import pytest
+
 from aoutools.prs import PRSConfig
 
 

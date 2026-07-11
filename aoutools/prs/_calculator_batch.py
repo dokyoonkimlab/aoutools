@@ -1,22 +1,24 @@
 """PRS batch calculator"""
 
-from typing import Optional
 import logging
+
 import hail as hl
 import hailtop.fs as hfs
 import pandas as pd
+
 from aoutools._utils.helpers import SimpleTimer
-from ._utils import _log_timing
+
 from ._calculator_utils import (
-    _prepare_samples_to_keep,
-    _validate_and_prepare_weights_table,
-    _orient_weights_for_split,
-    _check_allele_match,
     _calculate_dosage,
-    _prepare_weights_for_chunking,
+    _check_allele_match,
     _create_1bp_intervals,
+    _orient_weights_for_split,
+    _prepare_samples_to_keep,
+    _prepare_weights_for_chunking,
+    _validate_and_prepare_weights_table,
 )
 from ._config import PRSConfig
+from ._utils import _log_timing
 
 logger = logging.getLogger(__name__)
 
@@ -429,7 +431,7 @@ def calculate_prs_batch(
     vds: hl.vds.VariantDataset,
     output_path: str,
     config: PRSConfig = PRSConfig(),
-) -> Optional[str]:
+) -> str | None:
     """
     Calculates multiple Polygenic Risk Scores (PRS) concurrently using a
     memory-efficient, per-score annotation approach.

@@ -1,10 +1,12 @@
 """Reader for PRS weights files"""
 
-from typing import Union
 import logging
+
 import hail as hl
 import hailtop.fs as hfs
+
 from aoutools._utils.helpers import SimpleTimer
+
 from ._utils import (
     _stage_local_file_to_gcs,
     _standardize_chromosome_column,
@@ -192,7 +194,7 @@ def _read_prs_weights_noheader(
     file_path: str,
     column_map: dict,
     delimiter: str,
-    comment: Union[str, list[str]],
+    comment: str | list[str],
     keep_other_cols: bool = False,
     validate_alleles: bool = False,
     **kwargs
@@ -282,7 +284,7 @@ def _read_prs_weights_header(
     file_path: str,
     column_map: dict,
     delimiter: str,
-    comment: Union[str, list[str]],
+    comment: str | list[str],
     keep_other_cols: bool = False,
     validate_alleles: bool = False,
     **kwargs
@@ -399,9 +401,9 @@ def read_prs_weights(
     #pylint: disable=too-many-positional-arguments
     file_path: str,
     header: bool,
-    column_map: dict[str, Union[str, int]],
+    column_map: dict[str, str | int],
     delimiter: str = ',',
-    comment: Union[str, list[str]] = '#',
+    comment: str | list[str] = '#',
     keep_other_cols: bool = False,
     validate_alleles: bool = False,
     **kwargs

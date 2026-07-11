@@ -1,11 +1,6 @@
 # aoutools/prs/__init__.py
 
 # Import the main reader functions from the internal _reader.py module
-from ._reader import (
-    read_prs_weights,
-    read_prscs,
-)
-
 # Import the main calculator functions from the internal _calculator.py module
 from ._calculator import (
     calculate_prs,
@@ -24,6 +19,10 @@ from ._config import (
 # Import the PGS catalog downloader from the internal _downloader.py module
 from ._downloader import (
     download_pgs,
+)
+from ._reader import (
+    read_prs_weights,
+    read_prscs,
 )
 
 # Import the high-level workflow functions from the internal _workflow.py module

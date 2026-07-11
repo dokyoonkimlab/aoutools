@@ -4,14 +4,12 @@ Unit tests for the `_calculator.py` submodule.
 These tests use mocking to isolate the main calculation workflow from
 any real Hail/Spark dependencies.
 """
-import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-from aoutools.prs._calculator import (
-    calculate_prs,
-    _calculate_prs_chunk
-)
+import pytest
+
 from aoutools.prs import PRSConfig
+from aoutools.prs._calculator import _calculate_prs_chunk, calculate_prs
 
 
 @pytest.fixture

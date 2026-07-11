@@ -1,20 +1,21 @@
 """Internal utilities for the PRS calculator"""
 
-from typing import Union
 import logging
 from math import ceil
+
 import hail as hl
+
+from ._config import PRSConfig
 from ._utils import (
     _log_timing,
     _standardize_chromosome_column,
 )
-from ._config import PRSConfig
 
 logger = logging.getLogger(__name__)
 
 
 def _prepare_samples_to_keep(
-    samples: Union[hl.Table, list, set, tuple, int, float, str]
+    samples: hl.Table | list | set | tuple | int | float | str
 ) -> hl.Table:
     """
     Converts a flexible list of samples into a keyed Hail Table.

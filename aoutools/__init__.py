@@ -1,7 +1,7 @@
 # aoutools/__init__.py
 
 import logging
-from importlib.metadata import version, PackageNotFoundError
+from importlib.metadata import PackageNotFoundError, version
 
 # Derive the version from installed package metadata so pyproject.toml is the
 # single source of truth.

@@ -4,12 +4,13 @@ Unit tests for the general `_utils.py` submodule.
 These tests use mocking to isolate the functions from dependencies on the
 local file system, environment variables, and GCS.
 """
+from unittest.mock import MagicMock
+
 import pytest
-from unittest.mock import MagicMock, patch
 
 from aoutools.prs._utils import (
     _stage_local_file_to_gcs,
-    _standardize_chromosome_column
+    _standardize_chromosome_column,
 )
 
 

@@ -1,7 +1,7 @@
 """Helper functions for the library"""
 
-from time import perf_counter
 import logging
+from time import perf_counter
 
 logger = logging.getLogger(__name__)
 

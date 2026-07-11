@@ -1,9 +1,10 @@
 """Utility functions for Hail data processing"""
 
-import os
 import logging
-from time import perf_counter
+import os
 from contextlib import contextmanager
+from time import perf_counter
+
 import hail as hl
 import hailtop.fs as hfs
 
@@ -74,7 +75,7 @@ def _stage_local_file_to_gcs(
 
     workspace_bucket = os.getenv('WORKSPACE_BUCKET')
     if not workspace_bucket:
-        raise EnvironmentError(
+        raise OSError(
             "The 'WORKSPACE_BUCKET' environment variable is not set. "
             "This is required to stage local files to GCS."
         )

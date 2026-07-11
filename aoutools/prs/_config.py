@@ -3,9 +3,11 @@ This module defines a configuration class for Polygenic Risk Score (PRS)
 calculation.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Optional, Union, Sequence
+
 import hail as hl
+
 
 @dataclass
 class PRSConfig:
@@ -50,15 +52,7 @@ class PRSConfig:
         diagnosing performance issues.
     """
     chunk_size: int = 20000
-    samples_to_keep: Optional[
-        Union[
-            hl.Table,
-            Sequence[str],
-            Sequence[int],
-            str,
-            int
-        ]
-    ] = None
+    samples_to_keep: hl.Table | Sequence[str] | Sequence[int] | str | int | None = None
     weight_col_name: str = 'weight'
     log_transform_weight: bool = False
     include_n_matched: bool = False

@@ -4,15 +4,15 @@ High-level workflow function for end-to-end PGS calculation.
 
 import logging
 import tempfile
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Optional, Union, Iterable
 
 import hail as hl
 
-from ._downloader import download_pgs
-from ._reader import read_prs_weights
 from ._calculator_batch import calculate_prs_batch
 from ._config import PRSConfig
+from ._downloader import download_pgs
+from ._reader import read_prs_weights
 
 logger = logging.getLogger(__name__)
 
@@ -21,12 +21,12 @@ def calculate_pgs(
     *,
     vds: hl.vds.VariantDataset,
     output_path: str,
-    pgs: Union[Iterable[str], str],
-    build: Optional[str] = "GRCh38",
+    pgs: Iterable[str] | str,
+    build: str | None = "GRCh38",
     config: PRSConfig = PRSConfig(),
-    user_agent: Optional[str] = None,
+    user_agent: str | None = None,
     verbose: bool = False,
-) -> Optional[str]:
+) -> str | None:
     """
     Downloads specified PGS Catalog scoring files and calculates PRS.
 

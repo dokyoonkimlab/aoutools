@@ -9,7 +9,6 @@ between pgscatalog.core and dsub).
 """
 
 import concurrent.futures
-import importlib.util
 import logging
 import os
 import pathlib
@@ -18,8 +17,8 @@ import sys
 import tempfile
 import threading
 import venv
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable, Optional, Union
 
 from google.cloud import storage
 from google.cloud.exceptions import GoogleCloudError
@@ -28,7 +27,7 @@ from packaging.version import Version
 logger = logging.getLogger(__name__)
 
 _cached_cli_path_lock = threading.Lock()
-_cached_cli_path: Optional[Path] = None
+_cached_cli_path: Path | None = None
 
 DEFAULT_ENV_DIR = Path.home() / ".aoutools" / "pgscatalog_env"
 PGS_ENV_DIR = Path(os.environ.get("AOUTOOLS_PGS_ENV_DIR", DEFAULT_ENV_DIR))
@@ -60,7 +59,7 @@ def _get_bin_dir() -> Path:
     return PGS_ENV_DIR / ("Scripts" if sys.platform == "win32" else "bin")
 
 
-def _get_pgscatalog_version(bin_dir: Path) -> Optional[str]:
+def _get_pgscatalog_version(bin_dir: Path) -> str | None:
     """
     Get the installed pgscatalog.core version from the isolated venv.
 
@@ -141,7 +140,7 @@ def _ensure_pgscatalog_download(min_version: str = "1.0.1") -> Path:
 
 
 def _run_pgscatalog_download(
-    outdir: Union[str, Path],
+    outdir: str | Path,
     *args: str,
     min_version: str = "1.0.1",
 ) -> None:
@@ -163,7 +162,7 @@ def _run_pgscatalog_download(
     _run(cmd)
 
 
-def _normalize_arg(arg: Union[Iterable[str], str, None]) -> list[str]:
+def _normalize_arg(arg: Iterable[str] | str | None) -> list[str]:
     if arg is None:
         return []
     if isinstance(arg, str):
@@ -173,14 +172,14 @@ def _normalize_arg(arg: Union[Iterable[str], str, None]) -> list[str]:
 
 def download_pgs(
     *,
-    outdir: Union[str, pathlib.Path],
-    pgs: Union[Iterable[str], str, None] = None,
-    efo: Union[Iterable[str], str, None] = None,
-    pgp: Union[Iterable[str], str, None] = None,
-    build: Optional[str] = "GRCh38",
+    outdir: str | pathlib.Path,
+    pgs: Iterable[str] | str | None = None,
+    efo: Iterable[str] | str | None = None,
+    pgp: Iterable[str] | str | None = None,
+    build: str | None = "GRCh38",
     efo_include_children: bool = True,
     overwrite_existing_file: bool = False,
-    user_agent: Optional[str] = None,
+    user_agent: str | None = None,
     verbose: bool = False,
 ) -> None:
     """

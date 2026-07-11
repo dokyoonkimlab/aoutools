@@ -4,13 +4,14 @@ Unit tests for the `_reader.py` submodule.
 These tests use mocking to isolate the file reading and validation logic
 from any real Hail/Spark or GCS dependencies.
 """
+from unittest.mock import MagicMock
+
 import pytest
-from unittest.mock import MagicMock, patch
 
 from aoutools.prs._reader import (
-    read_prs_weights,
+    _check_duplicated_ids,
     _validate_alleles,
-    _check_duplicated_ids
+    read_prs_weights,
 )
 
 

@@ -4,15 +4,16 @@ Unit tests for the `_calculator_batch.py` submodule.
 These tests use mocking to isolate the batch calculation workflow from any
 real Hail/Spark or GCS dependencies.
 """
-import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-from aoutools.prs._calculator_batch import (
-    calculate_prs_batch,
-    _prepare_batch_weights_data,
-    _calculate_prs_chunk_batch
-)
+import pytest
+
 from aoutools.prs import PRSConfig
+from aoutools.prs._calculator_batch import (
+    _calculate_prs_chunk_batch,
+    _prepare_batch_weights_data,
+    calculate_prs_batch,
+)
 
 
 @pytest.fixture
