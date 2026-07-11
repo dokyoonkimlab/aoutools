@@ -95,12 +95,14 @@ def _stage_local_file_to_gcs(
 
 def _standardize_chromosome_column(table: hl.Table) -> hl.Table:
     """
-    Ensures that the 'chr' column has a 'chr' prefix.
+    Ensures that every value in the 'chr' column has a 'chr' prefix.
 
-    Inspects a sample value from the 'chr' column. If the prefix is missing
-    (e.g., '1' instead of 'chr1'), annotates the entire column to add it.
-    This standardization is crucial for matching against reference datasets
-    like the All of Us VDS.
+    Prepends the 'chr' prefix to any value that lacks it (e.g., '1' becomes
+    'chr1'), while leaving already-prefixed values (e.g., 'chr1') unchanged.
+    The check is applied per row rather than inferred from a single sampled
+    value, so mixed-format inputs (some rows prefixed, some not) are handled
+    correctly. This standardization is crucial for matching against reference
+    datasets like the All of Us VDS.
 
     Parameters
     ----------
@@ -112,12 +114,10 @@ def _standardize_chromosome_column(table: hl.Table) -> hl.Table:
     hail.Table
         A Hail Table with a standardized 'chr' column.
     """
-    if table.count() == 0:
-        return table
-
-    sample_chr = table.select('chr').take(1)[0].chr
-    if not str(sample_chr).startswith('chr'):
-        logger.info("Adding 'chr' prefix to chromosome column.")
-        table = table.annotate(chr=hl.str('chr') + table.chr)
-
-    return table
+    # Cast to string so integer contigs (e.g. 1 rather than '1') are tolerated.
+    chr_str = hl.str(table.chr)
+    # Per-row and idempotent: already-prefixed values pass through untouched,
+    # so this is safe on mixed-format columns and if applied more than once.
+    return table.annotate(
+        chr=hl.if_else(chr_str.startswith('chr'), chr_str, 'chr' + chr_str)
+    )

@@ -87,49 +87,27 @@ class TestStageLocalFileToGCS:
 class TestStandardizeChromosomeColumn:
     """Tests for the `_standardize_chromosome_column` function."""
 
-    def test_adds_chr_prefix(self, mocker):
+    def test_annotates_column_with_prefixing_expression(self, mocker):
         """
-        Tests that the 'chr' prefix is correctly added when missing.
+        Tests that the column is annotated with a per-row expression that
+        conditionally prepends the 'chr' prefix.
+
+        The transform is vectorized (applied to every row via `hl.if_else`)
+        rather than inferred from a single sampled value, so no `.take()`
+        driver round-trip should occur.
         """
         mock_hl = mocker.patch('aoutools.prs._utils.hl', MagicMock())
         mock_table = MagicMock()
-        mock_table.count.return_value = 1
-        # Simulate a table where the chromosome is '1' (a string)
-        mock_table.select().take.return_value = [MagicMock(chr='1')]
 
         _standardize_chromosome_column(mock_table)
 
-        # Assert that the table was annotated to add the prefix
+        # The column is standardized in a single vectorized annotate...
         mock_table.annotate.assert_called_once()
-        # Check that the expression to add 'chr' was constructed
-        assert mock_hl.str.call_args[0][0] == 'chr'
-
-    def test_skips_annotation_if_prefix_exists(self, mocker):
-        """
-        Tests that no annotation occurs if the 'chr' prefix already exists.
-        """
-        mocker.patch('aoutools.prs._utils.hl', MagicMock())
-        mock_table = MagicMock()
-        mock_table.count.return_value = 1
-        # Simulate a table where the chromosome is already 'chr1'
-        mock_table.select().take.return_value = [MagicMock(chr='chr1')]
-
-        _standardize_chromosome_column(mock_table)
-
-        # Assert that annotate was NOT called
-        mock_table.annotate.assert_not_called()
-
-    def test_handles_empty_table(self, mocker):
-        """
-        Tests that the function returns immediately for an empty table.
-        """
-        mocker.patch('aoutools.prs._utils.hl', MagicMock())
-        mock_table = MagicMock()
-        mock_table.count.return_value = 0  # Simulate an empty table
-
-        result = _standardize_chromosome_column(mock_table)
-
-        # Assert that the original table object is returned
-        assert result is mock_table
-        # Assert that no further processing was attempted
+        assert 'chr' in mock_table.annotate.call_args.kwargs
+        # ...built from a per-row conditional, and the raw contig is cast to a
+        # string so integer contigs are tolerated.
+        mock_hl.if_else.assert_called_once()
+        mock_hl.str.assert_called_once_with(mock_table.chr)
+        # No sampling pass: the old `.count()`/`.take()` gate is gone.
+        mock_table.count.assert_not_called()
         mock_table.select.assert_not_called()
