@@ -11,7 +11,8 @@ import pytest
 
 from aoutools.prs import PRSConfig
 from aoutools.prs._calculator_utils import (
-    _orient_weights_for_split,
+    _key_weights_by_variant,
+    _orient_weight_and_offset,
     _validate_and_prepare_weights_table,
 )
 
@@ -104,89 +105,103 @@ class TestValidateAndPrepareWeightsTable:
             _validate_and_prepare_weights_table(mock_weights_table, PRSConfig())
 
 
-class TestOrientWeightsForSplit:
+class TestKeyWeightsByVariant:
     """
-    Tests for `_orient_weights_for_split`, which sets allele orientation on the
-    split-multi path.
+    Tests for `_key_weights_by_variant`, which builds the join key.
 
-    This is the highest-risk function in the library: it decides which allele
-    the weight applies to. Get it wrong and every score is still a clean,
-    plausible float -- just inverted. Nothing else catches that.
-
-    `config.ref_is_effect_allele` is a plain Python bool, so `hl.if_else` here
-    is a branch selection on a real value. The mock below reproduces that
-    semantic, which lets these tests assert the orientation and sign actually
-    produced rather than merely that `hl.if_else` was called.
+    The key is the *unordered* allele pair, so a weights row matches its variant
+    whichever way round the effect allele is written. Keying on the ordered pair
+    -- as the old `ref_is_effect_allele` code did -- silently drops every row of
+    the opposite orientation. Keying on the locus alone would instead match the
+    wrong variant when a file names two variants at one position.
     """
 
-    def _orient(self, mocker, *, ref_is_effect_allele):
-        """Runs the function under test and returns (table, annotate kwargs)."""
+    def test_keys_by_locus_and_the_sorted_allele_pair(self, mocker):
+        mock_hl = mocker.patch("aoutools.prs._calculator_utils.hl", MagicMock())
+        mock_table = MagicMock()
+        mock_table.annotate.return_value = mock_table
+        mock_table.key_by.return_value = mock_table
+
+        _key_weights_by_variant(mock_table)
+
+        # The pair is canonicalized, not laid out as [ref, alt].
+        mock_hl.sorted.assert_called_once_with(
+            [mock_table.effect_allele, mock_table.noneffect_allele]
+        )
+        kwargs = mock_table.annotate.call_args.kwargs
+        assert kwargs["alleles"] is mock_hl.sorted.return_value
+        mock_table.key_by.assert_called_once_with("locus", "alleles")
+
+    def test_does_not_touch_the_weight(self, mocker):
+        """Orientation is resolved later, per row, against the VDS's own REF.
+        The weight must arrive at that point unmodified -- negating it here, as
+        the old code did, would double-negate."""
+        mocker.patch("aoutools.prs._calculator_utils.hl", MagicMock())
+        mock_table = MagicMock()
+        mock_table.annotate.return_value = mock_table
+        mock_table.key_by.return_value = mock_table
+
+        _key_weights_by_variant(mock_table)
+
+        assert "weight" not in mock_table.annotate.call_args.kwargs
+
+
+class TestOrientWeightAndOffset:
+    """
+    Tests for `_orient_weight_and_offset`, the highest-risk function here: it
+    decides which allele the weight applies to. Get the sign wrong and every
+    score is still a clean, plausible float -- just inverted.
+
+    `hl.if_else` is mocked to actually select a branch, so these assert the sign
+    produced rather than merely that `hl.if_else` was called. The arithmetic
+    itself is verified against real genotypes in `tests/integration/`.
+    """
+
+    def _orient(self, mocker, *, ref_is_effect):
         mock_hl = mocker.patch("aoutools.prs._calculator_utils.hl", MagicMock())
         mock_hl.if_else.side_effect = (
             lambda cond, if_true, if_false: if_true if cond else if_false
         )
 
-        mock_table = MagicMock()
-        mock_table.annotate.return_value = mock_table
-        mock_table.key_by.return_value = mock_table
+        mt = MagicMock()
+        weights_info = MagicMock()
+        if ref_is_effect:
+            # `effect_allele == alleles[0]` is True when they are the same
+            # object: MagicMock's default __eq__ is identity.
+            mt.alleles.__getitem__.return_value = weights_info.effect_allele
 
-        config = PRSConfig(ref_is_effect_allele=ref_is_effect_allele)
-        _orient_weights_for_split(mock_table, config)
+        return weights_info, _orient_weight_and_offset(mt, weights_info)
 
-        return mock_table, mock_table.annotate.call_args.kwargs
-
-    def test_effect_allele_is_alt_keeps_weight_sign(self, mocker):
-        """
-        Default case: the effect allele is the ALT allele.
-
-        Dosage on the split path is `GT.n_alt_alleles()`, i.e. a count of ALT
-        copies, so the effect allele belongs in the ALT slot and the weight is
-        used as-is.
-        """
-        table, kwargs = self._orient(mocker, ref_is_effect_allele=False)
-
-        assert kwargs["alleles"] == [
-            table.noneffect_allele,
-            table.effect_allele,
-        ]
-        assert kwargs["weight"] is table.weight
-
-    def test_ref_is_effect_allele_puts_effect_in_ref_and_negates_weight(
+    def test_effect_allele_on_the_alt_keeps_the_weight_and_adds_no_offset(
         self, mocker
     ):
-        """
-        `ref_is_effect_allele=True`: the effect allele is the REF allele.
-
-        The effect allele moves to the REF slot, so `GT.n_alt_alleles()` now
-        counts the *noneffect* allele. The weight is negated to compensate:
-        the contribution becomes `-w * n_alt` instead of the true
-        `w * n_effect = w * (2 - n_alt)`.
-
-        These differ by a constant `2w` per matched variant. Rows are filtered
-        identically for every sample, so that constant is shared across samples
-        and rankings/standardized scores are preserved -- but absolute scores
-        are offset. Dropping the negation flips the sign of the sample-varying
-        term, which inverts the score (highest genetic risk scores lowest)
-        while still producing a perfectly plausible distribution.
-        """
-        table, kwargs = self._orient(mocker, ref_is_effect_allele=True)
-
-        assert kwargs["alleles"] == [
-            table.effect_allele,
-            table.noneffect_allele,
-        ]
-        # `-table.weight`; identity is stable across accesses on a MagicMock.
-        assert kwargs["weight"] is table.weight.__neg__.return_value
-        assert kwargs["weight"] is not table.weight
-
-    @pytest.mark.parametrize("ref_is_effect_allele", [True, False])
-    def test_keys_by_locus_and_alleles(self, mocker, ref_is_effect_allele):
-        """
-        The split path joins the weights to the MatrixTable on
-        (locus, alleles); keying on anything else silently drops every variant.
-        """
-        table, _ = self._orient(
-            mocker, ref_is_effect_allele=ref_is_effect_allele
+        """Dosage is `GT.n_alt_alleles()`, so an ALT effect allele needs the
+        weight as-is. A hom-ref sample carries no copies of it and correctly
+        contributes nothing -- hence no offset."""
+        weights_info, (weight_per_alt_copy, hom_ref_offset) = self._orient(
+            mocker, ref_is_effect=False
         )
 
-        table.key_by.assert_called_once_with("locus", "alleles")
+        assert weight_per_alt_copy is weights_info.weight
+        assert hom_ref_offset == 0.0
+
+    def test_effect_allele_on_the_ref_negates_the_weight_and_offsets_by_2w(
+        self, mocker
+    ):
+        """A REF effect allele means the true contribution is `w * (2 - n_alt)`,
+        which is `2w - w * n_alt`. The per-entry term therefore carries the
+        *negated* weight, and the `2w` becomes a row-level offset -- the only
+        way to reach hom-ref samples, who have no entry to aggregate over.
+
+        Dropping the negation inverts the sample-varying term (highest genetic
+        risk scores lowest) while still producing a plausible distribution.
+        Dropping the offset silently zeroes every hom-ref sample.
+        """
+        weights_info, (weight_per_alt_copy, hom_ref_offset) = self._orient(
+            mocker, ref_is_effect=True
+        )
+
+        assert weight_per_alt_copy is weights_info.weight.__neg__.return_value
+        assert weight_per_alt_copy is not weights_info.weight
+        # `2.0 * weight` dispatches to the mock's __rmul__.
+        assert hom_ref_offset is weights_info.weight.__rmul__.return_value

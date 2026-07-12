@@ -89,14 +89,24 @@ weights table is chunked into `chunk_size` variants; each chunk builds 1bp
 intervals for `hl.vds.filter_intervals` so only relevant loci are read, computes
 its PRS, and results are summed across chunks. There is **one** scoring path:
 `hl.vds.split_multi` splits multi-allelic sites, the weights are joined on
-(locus, alleles) — so the join key *is* the allele check — and dosage is
-`GT.n_alt_alleles()`. `ref_is_effect_allele` orients the effect allele. Shared
-helpers live in `_calculator_utils.py`.
+(locus, **sorted** allele pair) — so the join key *is* the allele check, and it
+matches either orientation — and dosage is `GT.n_alt_alleles()`. Shared helpers
+live in `_calculator_utils.py`.
 
-A second, non-split path existed and was removed: it joined on locus alone and
-counted effect-allele copies by string comparison, which meant every hom-ref
-sample silently scored 0 at a variant whose effect allele was the REF base. That
-reorders a cohort. `TODO.md` has the evidence and the two remaining tasks.
+**The hom-ref offset.** Orientation is resolved per row against the VDS's REF.
+When the effect allele is the REF, the true contribution is `w·(2 − n_alt)`,
+which splits into a per-entry `−w·n_alt` and a row-level `2w`. The entry term is
+already right for hom-ref samples (`n_alt` is 0); the `2w` is added as a
+**row-level constant**, because a hom-ref sample has no entry and no entry
+aggregator can reach it. Three invariants hold it up, all of them silent if
+broken: the offset is only summed over rows that *matched* a variant, it is
+cancelled for no-call entries (`_entry_contribution`), and it never varies per
+sample. `tests/integration/` asserts each.
+
+Two knobs were removed for silently losing data: `split_multi=False` selected a
+path that zeroed every hom-ref sample at a REF-effect variant (reordering the
+cohort), and `ref_is_effect_allele` declared orientation file-wide when it is a
+per-row property, dropping every row that disagreed. `TODO.md` has the evidence.
 
 `_utils.py:_stage_local_file_to_gcs` copies local paths into
 `$WORKSPACE_BUCKET/data/...` because Hail's Spark cluster can't read the local

@@ -18,11 +18,16 @@ The mock VDS (weights effect allele in brackets):
 S1 is homozygous reference at every site, so it has no entry in `variant_data`
 at all. S4 has an entry at chr1:2000 whose genotype is missing -- a no-call.
 
-There is one scoring path: multi-allelics are split and the weights are joined
-on (locus, alleles). The non-split path was removed -- it silently dropped every
-hom-ref sample at a REF-effect variant, which reordered the cohort. The tests
-that pinned that bug are gone with it; `tests/prs/test_config.py` asserts the
-config knobs are now a hard error.
+There is one scoring path: multi-allelics are split, the weights are joined on
+(locus, sorted allele pair), and each matched row is oriented against the VDS's
+own REF/ALT. A REF-effect row contributes `-w * n_alt` per entry plus a
+row-level `2w` offset applied to every sample -- the only way to reach a hom-ref
+sample, which has no entry at all.
+
+Two things were removed. The non-split path silently dropped every hom-ref
+sample at a REF-effect variant, reordering the cohort. The global
+`ref_is_effect_allele` flag silently dropped every weights row of the opposite
+orientation. Both are now a hard `TypeError`; see `tests/prs/test_config.py`.
 """
 
 import hail as hl
@@ -91,17 +96,20 @@ def test_hom_ref_samples_are_absent_from_the_entry_stream(vds_lgt):
 
 
 def test_counts_alt_copies(vds_lgt, raw_weights):
-    """CORRECT. Dosage is a count of ALT copies, hom-ref contributes nothing."""
-    prs, n_matched = score(vds_lgt, raw_weights)
+    """CORRECT. Where the effect allele is the ALT, dosage is a plain count of
+    ALT copies, the offset is zero, and a hom-ref sample contributes nothing --
+    which is right, because it carries no copies of the effect allele.
 
-    # Only two weights rows have their effect allele on the ALT side and a
-    # variant that actually exists: chr1:1000 (G) and chr1:5000 (T).
+    chr1:1000 (effect G) and chr1:5000 (effect T) are the two ALT-effect rows.
+    """
+    prs, n_matched = score(vds_lgt, raw_weights, positions=[1000, 5000])
+
     assert n_matched == 2
     assert prs == {
-        "S1": 0.0,  # hom-ref everywhere
+        "S1": 0.0,  # hom-ref at both: no entry, and no offset to receive
         "S2": 1.0,  # one G at 1000; C/G at 5000 carries no T
         "S3": 3.0,  # two G at 1000, one T at 5000
-        "S4": 0.0,  # its only entry is the no-call at 2000, which is unmatched
+        "S4": 0.0,  # hom-ref at both
     }
 
 
@@ -125,101 +133,115 @@ def test_handles_multiallelic_sites(vds_lgt):
 
 
 def test_does_not_invent_a_genotype_for_a_no_call(vds_lgt, raw_weights):
-    """CORRECT, and it is a regression guard.
+    """CORRECT, and it is the subtlest guard in the file.
 
     S4's entry at chr1:2000 exists but its genotype is missing -- a genuine
-    no-call, an *unknown* genotype. The deleted `_calculate_dosage` handed such
-    a sample two copies of the effect allele whenever that allele was the REF
-    base. `GT.n_alt_alleles()` is missing instead, and `hl.agg.sum` skips it, so
-    S4 simply does not contribute. Nothing is invented.
+    no-call, an *unknown* genotype. The effect allele there is A, the REF, so
+    that row carries a `hom_ref_offset` of 2w which is added to **every** sample
+    in order to reach the hom-ref samples who have no entry.
+
+    S4 would therefore collect the 2w as well, and an unknown genotype would be
+    scored as two copies of the reference -- the exact bug that sank the old
+    non-split path, arriving by a new route. `_entry_contribution` cancels it:
+    a no-call has an entry, so it can be given `-hom_ref_offset`, which zeroes
+    out. S4 contributes nothing for this variant, as it should.
+
+    Compare S1, who is hom-ref here and has *no* entry to cancel with, and so
+    correctly keeps the full 2w.
     """
-    prs, _ = score(
-        vds_lgt, raw_weights, positions=[2000], ref_is_effect_allele=True
-    )
+    prs, _ = score(vds_lgt, raw_weights, positions=[2000])
 
     assert prs["S4"] == 0.0, "an unknown genotype must not be scored as A/A"
+    assert prs["S1"] == 2.0, "a hom-ref sample must still receive the offset"
 
 
 # --------------------------------------------------------------------------
-# Variant identity: the join key is the allele check.
+# Allele orientation, resolved per row against the VDS.
 # --------------------------------------------------------------------------
 
 
-def test_drops_variants_that_are_not_there(vds_lgt, raw_weights):
-    """CORRECT. The weights rows at chr1:3000 and chr1:4000 describe an A/G SNP.
-    The VDS has an A/T SNP at those positions -- the A/G variant does not exist.
+def test_scores_a_ref_effect_variant_exactly(vds_lgt, raw_weights):
+    """CORRECT, and this is the test the whole hom-ref problem comes down to.
 
-    Keying the join on (locus, alleles) means a weights row can only match a
-    variant with the same alleles, so both rows are dropped for everyone. This
-    is the check the removed path had to opt into via `strict_allele_match`, and
-    which it skipped entirely when that was False -- scoring a weight against
-    whatever variant happened to occupy the coordinate.
+    At chr1:2000 the effect allele is A -- the REF base. True copies of A:
+    S1 A/A = 2, S2 A/G = 1, S3 G/G = 0. S1 has no entry in `variant_data` and is
+    never visited by any entry aggregator, so its 2 copies cannot come from the
+    dosage. They arrive as the row-level `hom_ref_offset` (2w), which is added
+    to every sample.
+
+    These are the truth, not an offset from it. Before this fix the scores were
+    0/-1/-2 -- correctly *ordered*, but shifted by a constant 2w, so absolute
+    values were meaningless.
+    """
+    prs, n_matched = score(vds_lgt, raw_weights, positions=[2000])
+
+    assert n_matched == 1
+    assert prs["S1"] == 2.0  # A/A -- supplied entirely by the offset
+    assert prs["S2"] == 1.0  # A/G
+    assert prs["S3"] == 0.0  # G/G
+    # S4 is a no-call; its offset is cancelled. See
+    # test_does_not_invent_a_genotype_for_a_no_call.
+    assert prs["S4"] == 0.0
+
+
+def test_scores_both_orientations_from_one_file(vds_lgt, raw_weights):
+    """CORRECT. Orientation is a per-row property, read off the VDS.
+
+    The mock weights file is mixed: chr1:1000 and chr1:5000 name the ALT as
+    the effect allele, chr1:2000 names the REF. The old global
+    `ref_is_effect_allele` flag could score one group or the other -- 2 rows
+    with it off, 1 with it on -- and silently dropped the rest, not even
+    counting them in `n_matched`. The PGS Catalog does not harmonize the effect
+    allele onto the ALT, so a mixed file is the normal case.
+
+    All three real variants now match in a single pass.
+    """
+    prs, n_matched = score(vds_lgt, raw_weights)
+
+    assert n_matched == 3, "1000 and 5000 (ALT-effect) plus 2000 (REF-effect)"
+    assert prs == {
+        # 1000: one G. 2000: one A. 5000: C/G, no T.
+        "S2": 1.0 + 1.0 + 0.0,
+        # 1000: two G. 2000: no A. 5000: one T.
+        "S3": 2.0 + 0.0 + 1.0,
+        # hom-ref everywhere: 0 at 1000 and 5000, but two copies of A at 2000.
+        "S1": 0.0 + 2.0 + 0.0,
+        # hom-ref at 1000 and 5000; its 2000 entry is a no-call, contributing
+        # nothing rather than being imputed to A/A.
+        "S4": 0.0 + 0.0 + 0.0,
+    }
+
+
+def test_does_not_credit_the_offset_for_an_unmatched_variant(
+    vds_lgt, raw_weights
+):
+    """CORRECT. Variant identity, and the guard on the offset -- one test,
+    because they share an assertion.
+
+    chr1:3000 names an A/G SNP with A (a REF base) as the effect allele, and
+    chr1:4000 an A/G SNP with G as the effect allele. The VDS has an **A/T**
+    SNP at both positions; the A/G variant does not exist. Keying the join on
+    (locus, allele pair) means neither row can match -- that key *is* the
+    variant-identity check, and it is what the removed path had to opt into via
+    `strict_allele_match`.
+
+    Crucially the 3000 row must also contribute **no offset**. Its effect
+    allele is a REF base, so a matched row would carry a `2w` credit for every
+    sample. Handing that out for a variant that is not in the callset would
+    invent signal for the entire cohort, including samples with no entry
+    anywhere.
+
+    The single-score path gets this from `filter_rows` (the row is gone before
+    the offset is aggregated). The batch path never filters rows, so it must
+    gate the offset on `is_valid_{score}` -- a different mechanism for the same
+    guarantee, which is why `test_batch_agrees_with_single` matters.
     """
     prs, n_matched = score(vds_lgt, raw_weights, positions=[3000, 4000])
 
     assert n_matched == 0, "neither A/G variant exists in the VDS"
-    assert set(prs.values()) == {0.0}
-
-
-# --------------------------------------------------------------------------
-# Allele orientation. Both of these are Task 2's targets.
-# --------------------------------------------------------------------------
-
-
-def test_silently_drops_rows_of_the_opposite_orientation(vds_lgt, raw_weights):
-    """BUG (design limit). `ref_is_effect_allele` is global, not per-row.
-
-    The join key is built from the flag, so a weights file with mixed
-    orientation -- some rows naming the REF as the effect allele, some naming
-    the ALT -- has whichever half disagrees with the flag silently dropped. It
-    is not even counted in `n_matched`. The PGS Catalog does not harmonize the
-    effect allele onto the ALT, so mixed files are the normal case here, not a
-    pathological one.
-
-    Three of the five rows here vanish with the flag off, four with it on, and
-    the score still comes out as a clean number. See TODO.md, Finding 4.
-    """
-    _, n_alt_oriented = score(vds_lgt, raw_weights, ref_is_effect_allele=False)
-    _, n_ref_oriented = score(vds_lgt, raw_weights, ref_is_effect_allele=True)
-
-    assert n_alt_oriented == 2  # 1000, 5000
-    assert n_ref_oriented == 1  # 2000 only
-    # No setting of the flag scores all five rows.
-    assert n_alt_oriented + n_ref_oriented < len(raw_weights.collect())
-
-
-def test_ref_is_effect_offsets_every_sample_equally(vds_lgt, raw_weights):
-    """BUG (benign), and the invariant that makes it benign.
-
-    With `ref_is_effect_allele=True` the code negates the weight and multiplies
-    by the ALT count, giving `-w * n_alt` where the truth is `w * (2 - n_alt)`.
-    The two differ by a constant `2w` per matched variant. This test pins the
-    thing that actually matters: the offset is the *same for every sample*,
-    including the hom-ref sample that is never visited. Absolute scores are
-    shifted; rankings are not.
-
-    Confirmed on the real All of Us VDS, where every one of 200 samples was
-    short by exactly 2w*K. If a change ever makes this offset vary per sample,
-    cross-sample comparability is destroyed -- and this test goes red.
-
-    Task 2 removes the offset by adding `2 * sum(w)` over the matched REF-effect
-    rows back as a row-level constant. When it does, this test should be
-    rewritten to assert the scores equal `truth` outright.
-    """
-    # chr1:2000 alone. Effect allele is A (the REF). True copies of A:
-    # S1 A/A = 2, S2 A/G = 1, S3 G/G = 0.
-    truth = {"S1": 2.0, "S2": 1.0, "S3": 0.0}
-
-    prs, n_matched = score(
-        vds_lgt, raw_weights, positions=[2000], ref_is_effect_allele=True
-    )
-    assert n_matched == 1
-    assert prs["S1"] == 0.0 and prs["S2"] == -1.0 and prs["S3"] == -2.0
-
-    offsets = {s: truth[s] - prs[s] for s in truth}
-    assert set(offsets.values()) == {2.0}, (
-        "the 2w offset must be identical for every sample, or scores stop "
-        f"being comparable across individuals; got {offsets}"
+    assert set(prs.values()) == {0.0}, (
+        "an unmatched weights row must contribute nothing at all -- not even "
+        f"the hom-ref offset; got {prs}"
     )
 
 
@@ -228,16 +250,12 @@ def test_ref_is_effect_offsets_every_sample_equally(vds_lgt, raw_weights):
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("ref_is_effect_allele", [True, False])
-def test_batch_agrees_with_single(vds_lgt, raw_weights, ref_is_effect_allele):
-    """The batch calculator gates matches with `hl.if_else` rather than
-    `filter_rows`. Different mechanism, same number required."""
-    config = PRSConfig(
-        ref_is_effect_allele=ref_is_effect_allele, include_n_matched=True
-    )
-    single, _ = score(
-        vds_lgt, raw_weights, ref_is_effect_allele=ref_is_effect_allele
-    )
+def test_batch_agrees_with_single(vds_lgt, raw_weights):
+    """The batch calculator masks with `hl.if_else` where the single-score path
+    filters rows. Different mechanism, same number required -- including for the
+    hom-ref offset, which batch has to gate explicitly."""
+    config = PRSConfig(include_n_matched=True)
+    single, _ = score(vds_lgt, raw_weights)
 
     prepared, _ = _prepare_batch_weights_data({"s1": raw_weights}, config)
     df = _calculate_prs_chunk_batch(

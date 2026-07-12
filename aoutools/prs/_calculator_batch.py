@@ -10,7 +10,9 @@ from aoutools._utils.helpers import SimpleTimer
 
 from ._calculator_utils import (
     _create_1bp_intervals,
-    _orient_weights_for_split,
+    _entry_contribution,
+    _key_weights_by_variant,
+    _orient_weight_and_offset,
     _prepare_samples_to_keep,
     _prepare_weights_for_chunking,
     _validate_and_prepare_weights_table,
@@ -73,9 +75,7 @@ def _prepare_batch_weights_data(
         config.detailed_timings,
     ):
         for score_name, ht in prepared_weights.items():
-            final_prepared_weights[score_name] = _orient_weights_for_split(
-                ht, config
-            )
+            final_prepared_weights[score_name] = _key_weights_by_variant(ht)
 
     loci_to_keep = hl.Table.union(*all_loci_tables).key_by("locus").distinct()
     return final_prepared_weights, loci_to_keep
@@ -131,10 +131,16 @@ def _build_prs_agg_expr(
     Builds an aggregation expression to compute a Polygenic Risk Score (PRS)
     for a given score.
 
-    This expression calculates the sum of dosage multiplied by weight across
-    all valid variants. A variant is valid if it is matched in the weights
+    This expression sums `weight_per_alt_copy * dosage` over the entries of all
+    valid variants, and adds the row-level `hom_ref_offset` term that entry
+    aggregation cannot reach. A variant is valid if it is matched in the weights
     table. Rows are split before this runs, so `GT.n_alt_alleles()` is the
-    dosage.
+    dosage. See `_orient_weight_and_offset`.
+
+    Unlike the single-score path, batch mode never filters rows -- it masks with
+    `hl.if_else(is_valid, ...)` -- so **both** terms must be gated on
+    `is_valid_{score}`. An unmatched weights row must contribute no offset, or
+    every sample is credited for a variant that is not in the callset.
 
     Parameters
     ----------
@@ -149,15 +155,26 @@ def _build_prs_agg_expr(
     Returns
     -------
     hl.expr.Aggregation
-        An aggregation expression representing the sum of `dosage * weight`
-        across all valid variants for the given score.
+        An aggregation expression for the given score, including the hom-ref
+        offset.
     """
     weights_info = mt[f"weights_info_{score_name}"]
     is_valid = mt[f"is_valid_{score_name}"]
-    dosage = mt.GT.n_alt_alleles()
 
-    # Final score = sum of (dosage * weight) for valid variants
-    return hl.agg.sum(hl.if_else(is_valid, dosage * weights_info.weight, 0.0))
+    weight_per_alt_copy, hom_ref_offset = _orient_weight_and_offset(
+        mt, weights_info
+    )
+    contribution = _entry_contribution(mt, weight_per_alt_copy, hom_ref_offset)
+
+    # Aggregated over entries: hom-ref samples are absent and never visited.
+    entry_term = hl.agg.sum(hl.if_else(is_valid, contribution, 0.0))
+    # Aggregated over rows: reaches every sample, including the absent ones.
+    offset_term = mt.aggregate_rows(
+        hl.agg.sum(hl.if_else(is_valid, hom_ref_offset, 0.0)),
+        _localize=False,
+    )
+
+    return entry_term + offset_term
 
 
 def _calculate_prs_chunk_batch(

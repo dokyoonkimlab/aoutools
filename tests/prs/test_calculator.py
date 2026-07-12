@@ -92,18 +92,8 @@ class TestCalculatePRS:
 
 class TestChunkProcessing:
     """
-    Tests for the internal `_calculate_prs_chunk` function to verify
-    it dispatches to the correct preparation function based on config.
+    Tests for the internal `_calculate_prs_chunk` function.
     """
-
-    def _get_mock_mt(self):
-        """Helper to create a mock MatrixTable for testing aggregation."""
-        mock_mt = MagicMock()
-        # Configure the mock MT so that the multiplication inside
-        # hl.agg.sum(mt.dosage * mt.weights_info.weight) returns a number. This
-        # prevents the TypeError.
-        mock_mt.dosage.__mul__.return_value = 1.0
-        return mock_mt
 
     def test_calculate_prs_chunk_prepares_and_aggregates(self, mocker):
         """
@@ -112,12 +102,11 @@ class TestChunkProcessing:
         the non-split alternative was removed (see `TODO.md`).
         """
         # Arrange: Mock the internal preparation function
+        mocker.patch("aoutools.prs._calculator.hl", MagicMock())
         mock_prepare_split = mocker.patch(
             "aoutools.prs._calculator._prepare_mt_split"
         )
-
-        # Create a mock MatrixTable to be returned by the prep function
-        mock_mt = self._get_mock_mt()
+        mock_mt = MagicMock()
         mock_prepare_split.return_value = mock_mt
 
         # Act
@@ -127,5 +116,10 @@ class TestChunkProcessing:
 
         # Assert
         mock_prepare_split.assert_called_once()
+        # The hom-ref offset is aggregated over *rows*, not entries -- it is the
+        # only way to reach samples with no entry. Losing this call would zero
+        # every homozygous-reference sample at a REF-effect variant.
+        mock_mt.aggregate_rows.assert_called_once()
+        assert mock_mt.aggregate_rows.call_args.kwargs["_localize"] is False
         # Verify that the final aggregation step was called on the mock mt
         mock_mt.select_cols().cols.assert_called_once()

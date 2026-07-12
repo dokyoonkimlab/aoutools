@@ -42,9 +42,6 @@ optional
         should be used only when necessary.
     sample_id_col : str, default 'person_id'
         The column name to use for sample IDs in the final output table.
-    ref_is_effect_allele : bool, default False
-        If True, assumes effect allele in weights file corresponds to reference
-        allele in VDS.
     detailed_timings : bool, default False
         If True, logs timing information for each major step. Helpful for
         diagnosing performance issues.
@@ -58,5 +55,4 @@ optional
     log_transform_weight: bool = False
     include_n_matched: bool = False
     sample_id_col: str = "person_id"
-    ref_is_effect_allele: bool = False
     detailed_timings: bool = False

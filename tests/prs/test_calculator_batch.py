@@ -126,8 +126,8 @@ class TestBatchHelpers:
             side_effect=lambda weights_table, config: weights_table,
         )
         mock_orient = mocker.patch(
-            "aoutools.prs._calculator_batch._orient_weights_for_split",
-            side_effect=lambda ht, config: ht,
+            "aoutools.prs._calculator_batch._key_weights_by_variant",
+            side_effect=lambda ht: ht,
         )
 
         # Act

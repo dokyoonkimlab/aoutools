@@ -38,29 +38,21 @@ def totals(vds, raw_weights, chunk_size, **config_kwargs):
     return n_chunks, summed["prs"].to_dict()
 
 
-@pytest.mark.parametrize("ref_is_effect_allele", [True, False])
-def test_chunking_partitions_the_weights(
-    vds_lgt, raw_weights, ref_is_effect_allele
-):
+def test_chunking_partitions_the_weights(vds_lgt, raw_weights):
     """One variant per chunk must give the same score as one chunk for all.
 
     Five weights rows, so `chunk_size=1` means five separate passes over the
     VDS, each with its own interval filter. If the chunk boundaries overlapped,
     a variant would be counted twice; if they left a gap, one would vanish.
     Either shows up here as a changed total.
+
+    This also pins the `hom_ref_offset` under chunking: the offset is summed
+    over each chunk's matched rows, so it must add across chunks exactly once,
+    like any other per-variant term. Double-counting it would inflate every
+    sample equally and be invisible in a ranking.
     """
-    n_single, single = totals(
-        vds_lgt,
-        raw_weights,
-        chunk_size=None,
-        ref_is_effect_allele=ref_is_effect_allele,
-    )
-    n_per_variant, per_variant = totals(
-        vds_lgt,
-        raw_weights,
-        chunk_size=1,
-        ref_is_effect_allele=ref_is_effect_allele,
-    )
+    n_single, single = totals(vds_lgt, raw_weights, chunk_size=None)
+    n_per_variant, per_variant = totals(vds_lgt, raw_weights, chunk_size=1)
 
     assert n_single == 1
     assert n_per_variant == 5
@@ -105,6 +97,7 @@ def test_aggregate_and_export_sums_across_chunks(
     _aggregate_and_export(partial_dfs, str(out), config)
 
     written = pd.read_csv(out).set_index("person_id")["prs"].to_dict()
-    # Same expectation as test_counts_alt_copies, now reassembled
-    # from three separate passes over the VDS.
-    assert written == {"S1": 0.0, "S2": 1.0, "S3": 3.0, "S4": 0.0}
+    # Same expectation as test_scores_both_orientations_from_one_file, now
+    # reassembled from three separate passes over the VDS. S1's 2.0 is the
+    # hom_ref_offset from chr1:2000, and it must survive chunking intact.
+    assert written == {"S1": 2.0, "S2": 2.0, "S3": 3.0, "S4": 0.0}

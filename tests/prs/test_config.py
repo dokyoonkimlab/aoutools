@@ -24,7 +24,6 @@ def test_prs_config_defaults():
     assert config.log_transform_weight is False
     assert config.include_n_matched is False
     assert config.sample_id_col == "person_id"
-    assert config.ref_is_effect_allele is False
     assert config.detailed_timings is False
 
 
@@ -37,30 +36,36 @@ def test_prs_config_custom_values():
     config = PRSConfig(
         chunk_size=100,
         weight_col_name="BETA",
-        ref_is_effect_allele=True,
+        include_n_matched=True,
         detailed_timings=True,
     )
 
     # Assert: Check that the custom values were assigned correctly
     assert config.chunk_size == 100
     assert config.weight_col_name == "BETA"
-    assert config.ref_is_effect_allele is True
+    assert config.include_n_matched is True
     assert config.detailed_timings is True
 
 
 @pytest.mark.parametrize(
-    "removed_param", ["split_multi", "strict_allele_match"]
+    "removed_param",
+    ["split_multi", "strict_allele_match", "ref_is_effect_allele"],
 )
-def test_removed_non_split_params_are_rejected(removed_param):
+def test_removed_allele_handling_params_are_rejected(removed_param):
     """
-    The non-split scoring path was removed: it silently dropped every
-    homozygous-reference sample at a variant whose effect allele was the
-    reference base, which reordered the cohort. Confirmed on the real All of Us
-    VDS; see `TODO.md` (Findings 1-3).
+    Three knobs were removed, each because it silently lost data.
 
-    Both knobs that selected or tuned it must now be a hard error, not a
-    silently ignored keyword -- an ignored `split_multi=False` would look like
-    it had been honored.
+    `split_multi=False` selected a scoring path that dropped every
+    homozygous-reference sample at a variant whose effect allele was the
+    reference base -- which reordered the cohort. `strict_allele_match` tuned
+    only that path. `ref_is_effect_allele` declared allele orientation for a
+    whole file, but orientation is a per-row property, so every row of the
+    opposite orientation was silently dropped from the join; it is now resolved
+    per row against the VDS. See `TODO.md`.
+
+    All three must be a hard error rather than a silently ignored keyword. A
+    `split_multi=False` that was accepted and ignored would look to the caller
+    like it had been honored.
     """
     with pytest.raises(TypeError):
         PRSConfig(**{removed_param: False})

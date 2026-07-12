@@ -135,43 +135,152 @@ def _validate_and_prepare_weights_table(
     return weights_table.select("effect_allele", "noneffect_allele", "weight")
 
 
-def _orient_weights_for_split(ht: hl.Table, config: PRSConfig) -> hl.Table:
+def _key_weights_by_variant(ht: hl.Table) -> hl.Table:
     """
-    Orients alleles and weights for a split-multi join.
+    Keys a weights table by (locus, canonical allele pair) for the join.
 
-    Constructs a canonical `[ref, alt]` allele representation for the join key
-    and adjusts the weights so that they always correspond to the alternate
-    allele. This is important to ensure consistency in allele orientation for
-    PRS calculation.
+    The key is the *unordered* allele pair -- `hl.sorted` canonicalizes it --
+    so a weights row joins its variant whichever way round the effect allele
+    happens to be written. Orientation is then read per row off the VDS itself
+    (see `_orient_weight_and_offset`), not declared globally for the whole file.
+
+    That matters because orientation is a per-row property. The PGS Catalog
+    does not harmonize the effect allele onto the ALT: its spec says the effect
+    allele "does not necessarily need to correspond to the minor
+    allele/alternative allele", and harmonized (HmPOS) files remap coordinates
+    while preserving the original allele columns. A single file routinely
+    carries both orientations.
+
+    The locus alone is not enough of a key: a weights file may name more than
+    one variant at a position, and a locus-only lookup would arbitrarily pick
+    one of them. Keeping the alleles in the key also means the key *is* the
+    variant-identity check -- a weights row for an A/G SNP cannot match an A/T
+    variant sitting at the same locus.
 
     Parameters
     ----------
     ht : hail.Table
         A Hail table containing 'effect_allele', 'noneffect_allele', 'weight',
         and 'locus' fields.
-    config : PRSConfig
-        A configuration object specifying if reference allele is effect allele
-        (`ref_is_effect_allele`).
 
     Returns
     -------
     hail.Table
-        A table keyed by 'locus' and 'alleles', with adjusted 'weight' to align
-        with the alternate allele.
-
-    See also
-    --------
-    PRSConfig : A configuration class that specifies allele orientation
-        settings.
+        A table keyed by 'locus' and 'alleles', where 'alleles' is the sorted
+        pair. Weights are left untouched.
     """
     return ht.annotate(
-        alleles=hl.if_else(
-            config.ref_is_effect_allele,
-            [ht.effect_allele, ht.noneffect_allele],
-            [ht.noneffect_allele, ht.effect_allele],
-        ),
-        weight=hl.if_else(config.ref_is_effect_allele, -ht.weight, ht.weight),
+        alleles=hl.sorted([ht.effect_allele, ht.noneffect_allele])
     ).key_by("locus", "alleles")
+
+
+def _orient_weight_and_offset(
+    mt: hl.MatrixTable, weights_info: hl.expr.StructExpression
+) -> tuple[hl.expr.Float64Expression, hl.expr.Float64Expression]:
+    """
+    Resolves a matched weights row against the VDS's own REF/ALT orientation.
+
+    Returns `(weight_per_alt_copy, hom_ref_offset)`. The score for a variant is
+
+        agg.sum(weight_per_alt_copy * GT.n_alt_alleles())  +  hom_ref_offset
+
+    where the first term is aggregated over *entries* and the second is a
+    row-level constant added to every sample.
+
+    Why the offset exists
+    ---------------------
+    When the effect allele is the ALT, a sample's contribution is `w * n_alt`
+    and a homozygous-reference sample correctly contributes 0.
+
+    When the effect allele is the **REF**, the contribution is `w * (2 -
+    n_alt)`, and a hom-ref sample should get the full `2w`. But a hom-ref
+    sample has **no entry** in `variant_data` -- hail filters absent entries out
+    of the entry stream, so no aggregator ever visits it and no per-entry
+    default can reach it. Confirmed on the real All of Us VDS: 94 of 200 samples
+    had zero entries across a 5-variant window.
+
+    Rewriting the contribution as
+
+        w * (2 - n_alt)  ==  2w  -  w * n_alt
+
+    splits it into a part that is already correct for absent samples (their
+    `n_alt` is 0, so `-w * n_alt` is 0) and a constant `2w` that does not depend
+    on the genotype at all. The constant is therefore recoverable as a row-level
+    term, with no densification and no extra pass over the VDS.
+
+    The caller must only apply the offset for rows that actually matched a
+    variant in the VDS. Crediting `2w` for a variant that is not in the callset
+    would invent signal for every sample.
+
+    Parameters
+    ----------
+    mt : hail.MatrixTable
+        A split (bi-allelic) MatrixTable whose `alleles` field is `[ref, alt]`.
+    weights_info : hail.expr.StructExpression
+        The matched weights row: 'effect_allele', 'noneffect_allele', 'weight'.
+
+    Returns
+    -------
+    tuple of hail.expr.Float64Expression
+        The per-ALT-copy weight and the hom-ref offset for this row.
+    """
+    ref_is_effect = weights_info.effect_allele == mt.alleles[0]
+    weight = weights_info.weight
+
+    weight_per_alt_copy = hl.if_else(ref_is_effect, -weight, weight)
+    hom_ref_offset = hl.if_else(ref_is_effect, 2.0 * weight, 0.0)
+
+    return weight_per_alt_copy, hom_ref_offset
+
+
+def _entry_contribution(
+    mt: hl.MatrixTable,
+    weight_per_alt_copy: hl.expr.Float64Expression,
+    hom_ref_offset: hl.expr.Float64Expression,
+) -> hl.expr.Float64Expression:
+    """
+    The per-entry term of the score, paired with a row-level `hom_ref_offset`.
+
+    For a called genotype this is `weight_per_alt_copy * GT.n_alt_alleles()`.
+
+    For a **no-call** -- an entry that exists but whose genotype is unknown --
+    it is `-hom_ref_offset`, which exactly cancels the offset that row adds to
+    every sample. The sample therefore contributes nothing for that variant.
+
+    That cancellation is the whole reason this function exists. The offset is
+    added unconditionally to reach homozygous-reference samples, who have **no
+    entry** and cannot be reached any other way. But a no-call *does* have an
+    entry, so it receives the offset too -- and without this correction an
+    unknown genotype would be scored as two copies of the reference. That is
+    exactly the bug that sank the old non-split path, reappearing by a different
+    route.
+
+    Cancelling also keeps missingness handled consistently. A no-call at an
+    ALT-effect variant already contributes 0 (its dosage is missing and
+    `hl.agg.sum` skips it). Without the cancellation, a no-call at a REF-effect
+    variant would instead contribute `2w` -- so whether an unknown genotype was
+    dropped or imputed would depend on which allele the GWAS happened to label
+    the effect allele, which is arbitrary.
+
+    Parameters
+    ----------
+    mt : hail.MatrixTable
+        A split MatrixTable with a `GT` entry field.
+    weight_per_alt_copy : hail.expr.Float64Expression
+        From `_orient_weight_and_offset`.
+    hom_ref_offset : hail.expr.Float64Expression
+        From `_orient_weight_and_offset`.
+
+    Returns
+    -------
+    hail.expr.Float64Expression
+        The entry's contribution to the score. Never missing.
+    """
+    return hl.if_else(
+        hl.is_defined(mt.GT),
+        weight_per_alt_copy * mt.GT.n_alt_alleles(),
+        -hom_ref_offset,
+    )
 
 
 def _prepare_weights_for_chunking(

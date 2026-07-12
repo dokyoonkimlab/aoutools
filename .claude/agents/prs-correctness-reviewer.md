@@ -28,10 +28,11 @@ plainly rather than manufacturing findings.
 Read the code before trusting this summary — it is a map, not the territory.
 
 There is **one** scoring path. `hl.vds.split_multi` splits multi-allelic sites,
-then `_orient_weights_for_split` builds a canonical `[ref, alt]` allele pair and
-keys the weights on `(locus, alleles)`. Dosage is `mt.GT.n_alt_alleles()` — a
-count of **ALT** copies. Because the join key carries the alleles, the key *is*
-the allele check: a weights row cannot match a variant with different alleles.
+then `_key_weights_by_variant` keys the weights on `(locus, sorted allele pair)`.
+Dosage is `mt.GT.n_alt_alleles()` — a count of **ALT** copies. Because the join
+key carries the alleles, the key *is* the allele check: a weights row cannot
+match a variant with different alleles. Because the pair is **sorted**, it
+matches regardless of which side the effect allele sits on.
 
 **The fact everything else follows from: a hom-ref sample is not an entry.**
 In a VDS, `variant_data` holds entries only for samples with a non-reference call
@@ -49,25 +50,44 @@ while losing every actual hom-ref sample. If you see a change reintroduce a
 missing-genotype branch "to handle sparse hom-ref calls", that is the bug
 returning. Reject it.
 
-**Allele orientation — the live bug, and Task 2's target.** When
-`ref_is_effect_allele=True`, the effect allele sits in the REF position, so the
-true contribution is `w * (2 - n_alt)`. The code instead **negates the weight**
-and multiplies by `n_alt`, giving `-w * n_alt`. These differ by a constant `2w`
-per matched variant.
+**Allele orientation and the hom-ref offset — the load-bearing arithmetic.**
+Orientation is resolved **per row**, against the VDS's own REF/ALT
+(`_orient_weight_and_offset`). There is no global flag; `ref_is_effect_allele`
+was one and was removed, because orientation is a per-row property of the
+weights file and a global flag silently dropped every row that disagreed with
+it. The PGS Catalog does not harmonize the effect allele onto the ALT, so a
+mixed-orientation file is the normal case.
 
-That constant is the same for every sample — including the hom-ref sample, who
-contributes 0 to both — so rankings and standardized scores survive while
-**absolute scores are offset**. This invariant is the whole reason the offset is
-tolerable, and `test_ref_is_effect_offsets_every_sample_equally` pins it. If a
-change makes the offset vary per sample — by filtering rows per sample, or by
-making the matched-variant set genotype-dependent — scores become incomparable
-across individuals. That is a silent, severe bug. Watch for it.
+When the effect allele is the REF, the true contribution is `w * (2 - n_alt)`,
+which the code splits into two terms:
 
-`ref_is_effect_allele` is also a **global** flag standing in for a **per-row**
-property. Rows whose orientation disagrees with the flag produce a join key that
-does not exist and are silently dropped — not scored, not counted in `n_matched`.
-The PGS Catalog does not harmonize the effect allele onto the ALT, so mixed-
-orientation files are the normal case. See `TODO.md`, Finding 4.
+```
+w * (2 - n_alt)  ==  2w  -  w * n_alt
+                     └┬┘     └───┬───┘
+              row-level    per-entry, aggregated over the entry stream
+```
+
+The per-entry term is already correct for absent samples (`n_alt` is 0, so the
+term is 0). The `2w` is genotype-independent, so it is added as a **row-level
+constant** reaching every sample — the only way to reach hom-ref samples at all.
+
+Three ways this goes wrong, all silent:
+
+1. **Offset applied to an unmatched row.** It must only be summed over rows that
+   actually matched a variant in the VDS. Crediting `2w` for a variant not in the
+   callset invents signal for the entire cohort. The single-score path gets this
+   from `filter_rows`; the batch path never filters rows, so it must gate on
+   `is_valid_{score}`. Two mechanisms, one guarantee — check both.
+2. **Offset not cancelled for a no-call.** A hom-ref sample has no entry; a
+   no-call *does*. So a no-call also collects the `2w`, and an unknown genotype
+   gets scored as two copies of the reference unless `_entry_contribution`
+   subtracts it back out. That is the old non-split bug returning by a new route.
+3. **Offset made sample-dependent.** By filtering rows per sample, or making the
+   matched-variant set genotype-dependent. Then it stops being a constant and
+   starts reordering people.
+
+Dropping the weight negation inverts the sample-varying term — highest genetic
+risk scores lowest — while still producing a perfectly plausible distribution.
 
 **Interval prefilter vs. minrep (Finding 5).** `_create_1bp_intervals` builds
 intervals at the **weights** locus and `hl.vds.filter_intervals` runs on the
@@ -89,17 +109,18 @@ library is affordable on the All of Us VDS.
 
 ## What to check, in priority order
 
-1. **Allele orientation.** Does the effect allele still line up with the dosage
-   being counted, for both settings of `ref_is_effect_allele`? A sign error or a
-   swapped `[ref, alt]` pair inverts the score's direction — the output still
-   looks like a perfectly reasonable distribution. And does the `2w` offset stay
-   uniform across samples?
+1. **Allele orientation and the offset.** Does the effect allele still line up
+   with the dosage being counted, and does every REF-effect row still carry its
+   `2w`? A sign error inverts the score's direction; a lost offset zeroes every
+   hom-ref sample. Both still produce a perfectly reasonable-looking distribution.
+   Re-read the three failure modes above.
 
-2. **Join keys.** The weights must be keyed on `(locus, alleles)`, matching the
-   post-split MatrixTable. Keying them differently silently drops every variant
-   (score → 0 for everyone, or an empty join that looks like "no overlap") or
-   matches the wrong alt at multi-allelic sites. A change to key on locus alone
-   removes the only allele check there is.
+2. **Join keys.** The weights must be keyed on `(locus, sorted allele pair)`,
+   matching the post-split MatrixTable. The sort is what lets a row match
+   whichever way round its effect allele is written — an ordered `[ref, alt]` key
+   silently drops every row of the opposite orientation. Keying on locus alone
+   removes the only variant-identity check there is, and picks arbitrarily when a
+   file names two variants at one position.
 
 3. **Who gets visited.** A sample absent from `variant_data` is hom-ref and is
    never aggregated over. Any per-sample quantity that should include hom-ref
@@ -126,9 +147,10 @@ library is affordable on the All of Us VDS.
 
 Read the changed functions and both call sites (`_calculator.py` and
 `_calculator_batch.py` — batch has its own annotation/aggregation code that is
-easy to update in only one place). For each finding, state the config that
-triggers it (e.g. `ref_is_effect_allele`), the
-input that exposes it, and what the score becomes versus what it should be.
+easy to update in only one place, and it masks with `hl.if_else` where the
+single-score path filters rows). For each finding, state the input that exposes
+it — the weights row's orientation, the sample's genotype, whether the variant is
+in the VDS — and what the score becomes versus what it should be.
 
 Say explicitly when a change is correct but *changes scores* — e.g. a fixed
 orientation bug means previously-computed PRS values are no longer reproducible.

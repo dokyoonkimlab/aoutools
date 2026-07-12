@@ -10,7 +10,9 @@ from aoutools._utils.helpers import SimpleTimer
 
 from ._calculator_utils import (
     _create_1bp_intervals,
-    _orient_weights_for_split,
+    _entry_contribution,
+    _key_weights_by_variant,
+    _orient_weight_and_offset,
     _prepare_samples_to_keep,
     _prepare_weights_for_chunking,
 )
@@ -26,9 +28,13 @@ def _prepare_mt_split(
     """
     Prepares a MatrixTable for PRS calculation.
 
-    Splits multi-allelic sites in the VDS, orients weights based on
-    `ref_is_effect_allele`, joins with the weights table using (locus,
-    alleles), and calculates dosage using GT after splitting.
+    Splits multi-allelic sites in the VDS, joins the weights on (locus, sorted
+    allele pair), and resolves each matched row against the VDS's own REF/ALT
+    orientation. Dosage is `GT.n_alt_alleles()` after splitting.
+
+    Rows are annotated with `weight_per_alt_copy` and `hom_ref_offset`. The
+    caller must add the offset -- a row-level constant -- to every sample; see
+    `_orient_weight_and_offset` for why it cannot be an entry-level term.
 
     Parameters
     ----------
@@ -38,12 +44,13 @@ def _prepare_mt_split(
         A chunk of the PRS weights table.
     config : PRSConfig
         A configuration object controlling PRS behavior, including
-        `ref_is_effect_allele` and `detailed_timings`.
+        `detailed_timings`.
 
     Returns
     -------
     hail.MatrixTable
-        A MatrixTable annotated with `weights_info` and per-variant `dosage`.
+        A MatrixTable annotated with `weights_info`, `weight_per_alt_copy`,
+        `hom_ref_offset`, and per-variant `dosage`.
 
     See also
     --------
@@ -56,19 +63,34 @@ def _prepare_mt_split(
     ):
         mt = hl.vds.split_multi(vds).variant_data
 
-        weights_ht_processed = _orient_weights_for_split(weights_table, config)
+        weights_ht_processed = _key_weights_by_variant(weights_table)
         mt = mt.annotate_rows(weights_info=weights_ht_processed[mt.row_key])
 
+        # Only rows that matched a variant in the VDS survive. This filter is
+        # what makes it safe to add `hom_ref_offset` to every sample below: an
+        # unmatched weights row contributes no offset, because its row is gone.
         mt = mt.filter_rows(hl.is_defined(mt.weights_info))
 
     with _log_timing(
         "Planning: Calculating per-variant dosage",
         config.detailed_timings,
     ):
-        # After splitting, LGT is converted to GT, so we can
-        # directly and safely use the built-in dosage calculator.
-        # See the source code for `hl.vds.split_multi` for details.
-        mt = mt.annotate_entries(dosage=mt.GT.n_alt_alleles())
+        weight_per_alt_copy, hom_ref_offset = _orient_weight_and_offset(
+            mt, mt.weights_info
+        )
+        mt = mt.annotate_rows(
+            weight_per_alt_copy=weight_per_alt_copy,
+            hom_ref_offset=hom_ref_offset,
+        )
+
+        # After splitting, LGT is converted to GT, so we can directly and safely
+        # use the built-in dosage calculator. See the source code for
+        # `hl.vds.split_multi` for details.
+        mt = mt.annotate_entries(
+            contribution=_entry_contribution(
+                mt, mt.weight_per_alt_copy, mt.hom_ref_offset
+            )
+        )
 
         return mt
 
@@ -90,8 +112,8 @@ def _calculate_prs_chunk(
     vds : hail.vds.VariantDataset
         The Variant Dataset containing genotypes to score.
     config : PRSConfig
-        A configuration object specifying settings such as
-        `ref_is_effect_allele`, `include_n_matched`, and `sample_id_col`.
+        A configuration object specifying settings such as `include_n_matched`
+        and `sample_id_col`.
 
     Returns
     -------
@@ -109,9 +131,19 @@ def _calculate_prs_chunk(
         config=config,
     )
 
+    # Sum of `2w` over the matched rows whose effect allele is the REF base.
+    # A homozygous-reference sample has no entry in `variant_data`, so no
+    # aggregation over *entries* can reach it; this term is aggregated over
+    # *rows* and added to every sample. `_localize=False` keeps it a lazy
+    # expression so it folds into the aggregation below rather than costing a
+    # second pass over the VDS.
+    total_offset = mt.aggregate_rows(
+        hl.agg.sum(mt.hom_ref_offset), _localize=False
+    )
+
     # Chunks aggregation
     prs_table = mt.select_cols(
-        prs=hl.agg.sum(mt.dosage * mt.weights_info.weight)
+        prs=hl.agg.sum(mt.contribution) + total_offset
     ).cols()
 
     if config.include_n_matched:

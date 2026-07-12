@@ -11,8 +11,9 @@ The core findings were then **confirmed on the real All of Us VDS** with
 `notebooks/verify_hom_ref_dosage.ipynb`, run on the Workbench. Those numbers are
 quoted inline below — they are not from the mock.
 
-**Task 1 is done: the non-split scoring path has been removed** (Findings 1-3 went
-with it). Tasks 2 and 3 are open, and Findings 4 and 5 are still live.
+**Tasks 1 and 2 are done.** The non-split scoring path is gone (Findings 1-3 went
+with it) and allele orientation is now resolved per row (Finding 4). **Task 3 is
+open**, and Finding 5 is still live.
 
 ---
 
@@ -36,9 +37,9 @@ constant*, applied to every sample regardless of genotype.
 
 ---
 
-## Finding 4 — `ref_is_effect_allele` is a file-level flag for a row-level property
+## ~~Finding 4~~ — `ref_is_effect_allele` was a file-level flag for a row-level property
 
-**Severity: high. Live. Confirmed against the PGS Catalog format spec.**
+**Severity was high. FIXED by Task 2.** Confirmed against the PGS Catalog format spec.
 
 The join key is built from a **global** flag, but allele orientation is a **per-row**
 property. Every weights row whose orientation disagrees with the flag produces a key
@@ -63,13 +64,13 @@ the minor allele. On the 5-row mock file, the flag off matches 2 rows and on mat
 1 — **no setting scores them all**, and the score still comes out a clean float.
 (`test_silently_drops_rows_of_the_opposite_orientation`)
 
-Related, same fix: with `ref_is_effect_allele=True` the code computes `-w·n_alt`
-where the truth is `w·(2 - n_alt)`, so every score is short by a constant `2w` per
+Related, same fix: with `ref_is_effect_allele=True` the code computed `-w·n_alt`
+where the truth is `w·(2 - n_alt)`, so every score was short by a constant `2w` per
 matched variant. The Workbench run gave `10.0` for all 200 samples (`2w·K`, `w=1`,
-`K=5`) — **a single constant**, identical for every sample including the hom-ref one.
-Absolute scores shift; rankings survive. That invariant is what makes the bug
-tolerable, and it is asserted directly
-(`test_ref_is_effect_offsets_every_sample_equally`).
+`K=5`) — a single constant, so rankings survived but absolute scores were
+meaningless.
+
+**Both are fixed.** See Task 2 below for what replaced them.
 
 ---
 
@@ -118,17 +119,18 @@ Two faces:
 
 ## How scoring behaves today
 
-One path. `hl.vds.split_multi` splits multi-allelic sites, the weights are joined on
-`(locus, alleles)` — so the join key *is* the allele check — and dosage is
-`GT.n_alt_alleles()`.
+One path, no allele-handling config at all. `hl.vds.split_multi` splits
+multi-allelic sites, the weights are joined on `(locus, **sorted** allele pair)` —
+so the join key *is* the allele check, and it matches either orientation — and
+dosage is `GT.n_alt_alleles()`.
 
 | weights row | behavior |
 |---|---|
-| effect allele on the **ALT** | correct: `+w·n_alt`; hom-ref contributes 0, as it should |
-| effect allele on the **REF** | **dropped** unless `ref_is_effect_allele=True`, in which case scored as `-w·n_alt` with a uniform `2w` offset (Finding 4) |
-| variant not in the VDS | dropped for everyone; the join key enforces identity |
-| no-call entry | contributes nothing — `GT` is missing and `hl.agg.sum` skips it |
-| minrep shifts the locus | **silently missed** (Finding 5) |
+| effect allele on the **ALT** | correct: `+w·n_alt`, offset 0; hom-ref contributes nothing, as it should |
+| effect allele on the **REF** | correct: `−w·n_alt` per entry **plus a row-level `2w`** applied to every sample |
+| variant not in the VDS | dropped for everyone, **and contributes no offset** |
+| no-call entry | contributes nothing; the offset is cancelled by `_entry_contribution` |
+| minrep shifts the locus | **silently missed** (Finding 5, still open) |
 
 ---
 
@@ -168,32 +170,44 @@ slower. Its speed advantage was never measured.
 Finding 5 — the split path drops those variants too, for a different reason. That
 arrives only with Task 3.
 
-### Task 2 — fix allele orientation (Finding 4)
+### ~~Task 2 — fix allele orientation~~ (done)
 
-Remove `ref_is_effect_allele` entirely. It is a global flag standing in for a per-row
-property.
+`ref_is_effect_allele` is gone. Orientation is resolved **per row**, against the
+VDS's own REF/ALT:
 
-Post-`split_multi` rows are biallelic, so:
+1. `_key_weights_by_variant` keys the weights on `(locus, hl.sorted([effect,
+   noneffect]))`. Sorting canonicalizes the pair, so a row matches its variant
+   whichever way round it is written; keeping the alleles in the key preserves
+   variant identity *and* disambiguates a file that names two variants at one locus.
+2. `_orient_weight_and_offset` returns `(weight_per_alt_copy, hom_ref_offset)` —
+   `(+w, 0)` when the effect allele is the ALT, `(−w, 2w)` when it is the REF.
+3. `prs = agg.sum(contribution) + agg_rows.sum(hom_ref_offset)`.
 
-1. Key the weights on **locus** and identify the variant orientation-free:
-   `hl.set(alleles) == hl.set([effect_allele, noneffect_allele])`.
-2. Per row: if `effect == alleles[1]`, contribute `+w·n_alt`. Otherwise (effect is
-   REF) contribute `−w·n_alt` **and add `2w` to a row-level constant.**
-3. `prs = agg.sum(w_eff · n_alt) + 2·Σw` over matched REF-effect rows.
+The algebra: a REF-effect row's true contribution is `w·(2 − n_alt) = 2w − w·n_alt`.
+The `−w·n_alt` term is **already correct for absent samples** (`n_alt = 0` → 0), so
+the aggregator skipping them costs nothing. Only the `2w` is missing, and it does not
+depend on genotype — it is a row-level scalar. `mt.aggregate_rows(..., _localize=False)`
+keeps it a lazy expression, so it folds into the existing job: **no densification, no
+second entry pass, no extra VDS read.**
 
-The algebra: the true contribution of a REF-effect row is `w·(2 − n_alt) = 2w −
-w·n_alt`. The `−w·n_alt` term is **already correct for absent samples** (`n_alt = 0`
-→ 0), so the aggregator skipping them costs nothing. Only the `2w` is missing, and it
-does not depend on genotype — it is a row-level scalar.
+Three invariants hold this up, and all three are asserted:
 
-The correction is a **rows-only aggregation** over already-filtered rows: no
-densification, no second entry pass, no extra VDS read.
+- **The offset only applies to matched rows.** Crediting `2w` for a variant that is
+  not in the callset would invent signal for the whole cohort. The single-score path
+  gets this from `filter_rows`; the batch path never filters rows, so it gates on
+  `is_valid_{score}`. (`test_does_not_credit_the_offset_for_an_unmatched_variant`,
+  `test_batch_agrees_with_single`)
+- **The offset is cancelled for a no-call.** A hom-ref sample has no entry; a no-call
+  *does*, so it would collect the `2w` too — reintroducing Finding 2 by a new route.
+  `_entry_contribution` gives a no-call `−hom_ref_offset`, zeroing it out. Without
+  this, whether an unknown genotype was dropped or imputed would depend on which
+  allele the GWAS happened to label the effect allele, which is arbitrary.
+  (`test_does_not_invent_a_genotype_for_a_no_call`)
+- **It survives chunking**, summing once per matched row across chunks.
+  (`test_chunking_partitions_the_weights`)
 
-Result: mixed-orientation weights files score every row, the `2w` offset is gone, and
-another config knob disappears.
-
-When this lands, `test_ref_is_effect_offsets_every_sample_equally` should be rewritten
-to assert the scores equal the truth outright.
+Both were **mutation-tested**: dropping the offset, and dropping the no-call
+cancellation, each turn exactly the expected tests red and nothing else.
 
 ### Task 3 — the interval prefilter (Finding 5)
 
@@ -220,12 +234,20 @@ width must be justified by (2), not guessed.
 
 ## Other open items
 
-- **Release note.** The removal changes every previously computed score, in two
-  different ways, and users need to be told which applies to them. On the split path,
-  absolute scores shift but the **old rankings were right**. On the removed non-split
-  path with REF-effect weights, the **rankings themselves were wrong** and anything
-  downstream needs redoing. That distinction is the difference between "your numbers
-  moved" and "your result was wrong" — say it plainly, do not soften it.
+- **Release note (Tasks 1 + 2 together — one note, not two).** Every previously
+  computed score changes, and users need to know *which kind* of change hit them:
+  - `split_multi=False` **with REF-effect weights**: the **rankings themselves were
+    wrong** (hom-ref samples zeroed, per-sample error). Anything downstream needs
+    redoing.
+  - `ref_is_effect_allele=True`: rankings were right, absolute values were short by
+    a constant. Percentile/z-score results still stand.
+  - **Everyone else, including default config**: REF-effect weights rows were
+    silently *dropped* and now contribute. Scores move; the old ones were computed
+    from a subset of the variants.
+
+  That first bullet is the difference between "your numbers moved" and "your result
+  was wrong". Say it plainly, do not soften it. Three config knobs are removed, so
+  this is a breaking change — bump accordingly.
 - **`main` is behind `dev`.** All current work is on `dev`. Clean fast-forward
   whenever wanted.
 - **No strand harmonization exists anywhere.** Weights are assumed to be on the same
