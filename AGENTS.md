@@ -108,6 +108,14 @@ path that zeroed every hom-ref sample at a REF-effect variant (reordering the
 cohort), and `ref_is_effect_allele` declared orientation file-wide when it is a
 per-row property, dropping every row that disagreed. `TODO.md` has the evidence.
 
+**`hl.vds.split_multi` is called with the default `filter_changed_loci=False`,
+which raises. That is deliberate — don't set it to `True` to silence an error.**
+`min_rep` trimming a shared *suffix* is safe and relied on (`[AGGGC, A, GGGGC]` →
+`A/G` at the same locus, which is how a GWAS names it). Trimming a shared *prefix*
+would *move* the locus, and hail can then only raise or silently drop the allele.
+No such variant exists in AoU (0 of 6,001,424 ALTs measured), so the exception is
+a tripwire for a future VDS release, not a crash risk.
+
 `_utils.py:_stage_local_file_to_gcs` copies local paths into
 `$WORKSPACE_BUCKET/data/...` because Hail's Spark cluster can't read the local
 notebook filesystem. Package version derives from installed metadata

@@ -11,9 +11,10 @@ The core findings were then **confirmed on the real All of Us VDS** with
 `notebooks/verify_hom_ref_dosage.ipynb`, run on the Workbench. Those numbers are
 quoted inline below — they are not from the mock.
 
-**Tasks 1 and 2 are done.** The non-split scoring path is gone (Findings 1-3 went
-with it) and allele orientation is now resolved per row (Finding 4). **Task 3 is
-open**, and Finding 5 is still live.
+**All three tasks are closed.** The non-split scoring path is gone (Findings 1-3
+went with it), allele orientation is resolved per row (Finding 4), and Finding 5
+turned out **not to occur in All of Us at all** -- measured, not assumed -- so
+Task 3 was cancelled rather than built.
 
 ---
 
@@ -74,46 +75,68 @@ meaningless.
 
 ---
 
-## Finding 5 — the 1bp interval prefilter defeats the split path's own minrep
+## ~~Finding 5~~ — the interval prefilter vs. minrep
 
-**Severity: medium-high. Live; no test covers it yet.**
+**Severity was medium-high. CLOSED: the problem does not occur in All of Us.**
+Measured with `notebooks/measure_minrep_locus_shift.ipynb`, run on the Workbench.
 
-`hl.vds.split_multi` applies `hl.min_rep`, which can **move the locus**. Verified on
-real hail:
-
-```
-minrep of chr1:1000 [AGG, AG, AGT]:
-  AGG/AG   -> chr1:1000  ['AG', 'A']    locus unchanged
-  AGG/AGT  -> chr1:1002  ['G',  'T']    locus MOVES +2
-```
-
-A GWAS reports that SNP at its normalized position, chr1:**1002**. But
-`_create_1bp_intervals` (`_calculator_utils.py`) builds the interval at the
-**weights** locus, and `hl.vds.filter_intervals` runs on the **unsplit** VDS
-(`_calculator.py`) — *before* `split_multi`, where the row still sits at chr1:1000:
+`hl.min_rep` trims shared bases, and it matters *which end*:
 
 ```
-1bp interval [chr1:1002] -> VDS rows kept: 0    <-- the row lives at 1000
-1bp interval [chr1:1000] -> VDS rows kept: 1
+minrep of chr1:1001 [AGGGC, A, GGGGC]   (shared SUFFIX)
+  AGGGC/GGGGC -> chr1:1001  ['A', 'G']    locus UNCHANGED   <- safe, and relied on
+
+minrep of chr1:1001 [GG, G, GT]         (shared PREFIX)
+  GG/GT       -> chr1:1002  ['G', 'T']    locus MOVES +1    <- the feared case
 ```
 
-The variant is discarded before `split_multi` can normalize it.
+Only **prefix** trimming moves a locus, and it happens when a joint caller packs a
+SNP into the same record as a deletion whose VCF anchor base sits upstream of it.
+The shift equals the distance from that anchor base to the SNP.
 
-Note the limit of this: minrep only shifts the locus when the two alleles share a
-**leading** base. VDS alleles `['AGGGC', 'A', 'GGGGC']` minrep to `['A', 'G']` at
-the *same* locus, and that variant matches fine. Only the shared-prefix case is lost.
+The concern was real in principle: `_create_1bp_intervals` builds intervals at the
+**weights** locus and `filter_intervals` runs on the **unsplit** VDS, so a row
+physically upstream of its minrep'd position would never be read. And
+`hl.vds.split_multi` cannot rescue it — hail will not relocate a row, it can only
+**raise** (`filter_changed_loci=False`, the default) or **silently drop the
+allele** (`True`). Verified both.
 
-Two faces:
+**But it does not happen.** In a 10Mb window of chr1 (`chr1:50,000,000-60,000,000`):
 
-- **Silent miss** (the common one): weights locus ≠ VDS locus → row filtered out →
-  variant never scores, no error.
-- **Hard crash** (latent): `hl.vds.split_multi(vds)` is called with the default
-  `filter_changed_loci=False`, which **raises** rather than filters when a REF/ALT
-  pair changes locus. If a weights locus lands exactly on the *start* of a padded
-  multi-allelic, the row survives the interval filter, `split_multi` runs on it, and
-  the run dies. Never observed in practice — because the prefilter usually throws
-  those rows away first. **Widening the intervals (the fix) makes this reachable**,
-  so `filter_changed_loci` must be settled in the same change.
+| | |
+|---|---|
+| VDS rows | 4,568,862 |
+| multi-allelic rows | 978,586 (**21.4%**) |
+| (variant, ALT) pairs | 6,001,424 |
+| **ALTs whose locus shifts** | **0** |
+| weights rows of PGS000746 recovered by a fix | **0 of 163** |
+| weights loci where the crash is reachable | **0** |
+
+All of Us never packs a SNP downstream of an indel's anchor base into one record:
+every ALT is already minimally represented against its own row's locus, so
+`min_rep` has nothing to relocate. The multi-allelic sites that *do* exist (21% of
+rows) are tri-allelic SNPs, or indels sharing an anchor — none of which shift.
+
+### What was done instead of the fix
+
+Nothing was rebuilt. The proposed redesign (replace `hl.vds.split_multi` with an
+explode + `min_rep`-keyed join) would recover **zero** variants and would
+reintroduce hand-rolled allele handling of exactly the kind that caused Findings
+1-3. Cancelled.
+
+Two guards were added instead:
+
+- **`filter_changed_loci` stays at `False` (raise) deliberately.** With a measured
+  rate of zero, that exception is not a crash risk — it is a **tripwire**. If a
+  future VDS release ever changes variant representation, the run fails loudly
+  instead of quietly dropping variants and producing a plausible, wrong score.
+  Setting it to `True` would convert the tripwire into precisely the silent data
+  loss this whole document is about.
+  (`test_a_locus_shifting_variant_raises_rather_than_vanishing`)
+- **The normalization we *do* rely on is now tested.** Suffix trimming — a
+  multi-allelic, non-minimally-represented variant reducing to the `A/G` a GWAS
+  actually names — had no coverage at all, despite being the behavior the library
+  depends on. (`test_normalizes_a_non_minimal_representation`)
 
 ---
 
@@ -130,7 +153,8 @@ dosage is `GT.n_alt_alleles()`.
 | effect allele on the **REF** | correct: `−w·n_alt` per entry **plus a row-level `2w`** applied to every sample |
 | variant not in the VDS | dropped for everyone, **and contributes no offset** |
 | no-call entry | contributes nothing; the offset is cancelled by `_entry_contribution` |
-| minrep shifts the locus | **silently missed** (Finding 5, still open) |
+| non-minimal representation (suffix trim) | correct: normalized to the variant the GWAS names |
+| minrep would shift the locus (prefix trim) | **raises** — a deliberate tripwire; does not occur in AoU (Finding 5) |
 
 ---
 
@@ -209,26 +233,14 @@ Three invariants hold this up, and all three are asserted:
 Both were **mutation-tested**: dropping the offset, and dropping the no-call
 cancellation, each turn exactly the expected tests red and nothing else.
 
-### Task 3 — the interval prefilter (Finding 5)
+### ~~Task 3 — the interval prefilter~~ (cancelled; the problem does not exist)
 
-**Prelude (do this first): confirm on the real AoU VDS, in a notebook.** Everything
-below is sized by the answer, and the mock cannot tell us the rate. Measure:
+The prelude measurement came back zero, so the redesign was never built. See
+Finding 5 above for the numbers and for the two guards that were added instead.
 
-1. How often does a variant in the AoU `variant_data` have a REF longer than 1bp
-   *and* a multi-allelic ALT whose minrep shifts the locus? (Scan a window; count.)
-2. For a real PGS Catalog weights file: how many loci fail to match the VDS today,
-   and how many of those are explained by a locus-shifted multi-allelic sitting
-   upstream within N bp? Sweep N to pick a pad width empirically.
-3. Does any weights locus land exactly on the start of such a multi-allelic — i.e.
-   is the `filter_changed_loci=False` crash reachable on real data? (The user has
-   never hit it, which is consistent with the prefilter hiding it.)
-
-Then implement: left-pad the intervals in `_create_1bp_intervals` by the measured
-width so the padded multi-allelic survives to `split_multi`, and settle
-`filter_changed_loci` (widening the intervals makes the crash *more* reachable, not
-less — a variant that shifts out of its interval must be handled deliberately, not by
-an exception). Padding costs VDS read, which is real money on this dataset, so the
-width must be justified by (2), not guessed.
+Worth keeping in mind: this is a property of **All of Us's callset**, not of hail.
+If `aoutools` is ever pointed at a VDS from a different pipeline, the assumption
+could break — which is the other reason the raising default stays armed.
 
 ---
 

@@ -40,6 +40,17 @@ VARIANTS = [
     ("chr1:4000", ["A", "T"], {"S2": [0, 1], "S3": [1, 1]}),
     # Multi-allelic. S2 is C/G, S3 is C/T. Weights name T as the effect allele.
     ("chr1:5000", ["C", "G", "T"], {"S2": [0, 1], "S3": [0, 2]}),
+    # Multi-allelic AND not minimally represented, but the locus does NOT move.
+    # A deletion (AGGGC -> A) shares this record with a SNP (AGGGC -> GGGGC).
+    # The SNP differs at the *first* base, so `hl.min_rep` trims the shared
+    # suffix GGGC and reduces it to A/G at this same locus -- which is how a
+    # GWAS names it. Trimming a shared *prefix* would instead move the locus;
+    # that case does not occur in All of Us (measured: 0 of 6,001,424 ALTs; see
+    # notebooks/measure_minrep_locus_shift.ipynb).
+    #
+    # S2 carries the SNP, S3 is homozygous for it. No weights row in WEIGHTS
+    # names this locus -- the test supplies its own.
+    ("chr1:6000", ["AGGGC", "A", "GGGGC"], {"S2": [0, 2], "S3": [2, 2]}),
 ]
 
 # Every weight is 1.0, so `prs` is literally the summed count of effect-allele
@@ -171,3 +182,53 @@ def raw_weights():
             weight=hl.tfloat64,
         ),
     )
+
+
+@pytest.fixture(scope="session")
+def vds_locus_shifting():
+    """A VDS containing a variant whose locus MOVES under `hl.min_rep`.
+
+    `chr1:1001 [GG, G, GT]` -- a deletion of the G at 1002, which VCF anchors
+    one base earlier, sharing a record with a G>T SNP at 1002. `min_rep` reduces
+    `GG -> GT` to `G -> T` at chr1:**1002**, one base downstream of the row.
+
+    `hl.vds.split_multi` refuses to relocate rows, so it raises on this. That is
+    deliberate and this VDS exists to pin it -- see
+    `test_a_locus_shifting_variant_raises_rather_than_vanishing`. It is kept out
+    of the main fixture because `split_multi` runs over the whole VDS, so a
+    single such row would make every other test raise.
+
+    No variant of this shape exists in All of Us: 0 of 6,001,424 ALT alleles
+    in a 10Mb window shifted (`notebooks/measure_minrep_locus_shift.ipynb`).
+    """
+    entries = [
+        {
+            "locus_str": "chr1:1001",
+            "alleles": ["GG", "G", "GT"],
+            "s": s,
+            "gt": gt,
+            "la": [0, 2],
+            "GQ": 40,
+            "END": None,
+        }
+        for s, gt in [("S1", [0, 0]), ("S2", [0, 1])]
+    ]
+    ht = hl.Table.parallelize(
+        entries,
+        hl.tstruct(
+            locus_str=hl.tstr,
+            alleles=hl.tarray(hl.tstr),
+            s=hl.tstr,
+            gt=hl.tarray(hl.tint32),
+            la=hl.tarray(hl.tint32),
+            GQ=hl.tint32,
+            END=hl.tint32,
+        ),
+    )
+    ht = ht.annotate(
+        locus=hl.parse_locus(ht.locus_str, reference_genome="GRCh38")
+    )
+    ht = ht.annotate(LGT=hl.call(ht.gt[0], ht.gt[1]), LA=ht.la)
+    ht = ht.drop("gt", "la", "locus_str")
+    mt = ht.to_matrix_table(row_key=["locus", "alleles"], col_key=["s"])
+    return hl.vds.VariantDataset.from_merged_representation(mt, is_split=False)

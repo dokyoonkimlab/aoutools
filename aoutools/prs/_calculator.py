@@ -61,6 +61,24 @@ def _prepare_mt_split(
         "Planning: Splitting multi-allelic variants and joining",
         config.detailed_timings,
     ):
+        # `filter_changed_loci` is left at its default of False, which *raises*
+        # if `hl.min_rep` moves a variant's locus. That is deliberate; do
+        # not set it to True to silence an error.
+        #
+        # min_rep trims shared bases. Trimming a shared SUFFIX is safe, and is
+        # relied upon: it reduces [AGGGC, A, GGGGC] to A/G at the same locus,
+        # which is how a GWAS names that SNP. Trimming a shared PREFIX instead
+        # MOVES the locus ([GG, G, GT] -> G/T one base downstream), and hail
+        # will not relocate a row -- it can only raise, or drop the allele.
+        # Dropping it would mean the variant silently never scores.
+        #
+        # No variant of the prefix-trimming shape exists in All of Us: 0 of
+        # 6,001,424 ALT alleles in a 10Mb window, 21% of whose rows were
+        # multi-allelic (notebooks/measure_minrep_locus_shift.ipynb). So this
+        # is not a crash risk, it is a tripwire: if a future VDS release
+        # changes variant representation we fail loudly, instead of scoring
+        # silently wrong. Pinned by tests/integration/test_allele_matching.py
+        # ::test_a_locus_shifting_variant_raises_rather_than_vanishing
         mt = hl.vds.split_multi(vds).variant_data
 
         weights_ht_processed = _key_weights_by_variant(weights_table)

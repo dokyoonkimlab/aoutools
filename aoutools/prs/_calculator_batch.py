@@ -224,6 +224,10 @@ def _calculate_prs_chunk_batch(
         "Planning: Splitting multi-allelic variants",
         config.detailed_timings,
     ):
+        # `filter_changed_loci` is left at False (raise) on purpose. See the
+        # long comment on the same call in `_calculator.py`: setting it True
+        # would silently drop any variant whose locus min_rep moves, and the
+        # raising default is a deliberate tripwire.
         mt = hl.vds.split_multi(vds).variant_data
         mt_key = mt.row_key
 

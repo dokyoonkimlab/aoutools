@@ -89,14 +89,20 @@ Three ways this goes wrong, all silent:
 Dropping the weight negation inverts the sample-varying term — highest genetic
 risk scores lowest — while still producing a perfectly plausible distribution.
 
-**Interval prefilter vs. minrep (Finding 5).** `_create_1bp_intervals` builds
-intervals at the **weights** locus and `hl.vds.filter_intervals` runs on the
-**unsplit** VDS. But `split_multi` applies `hl.min_rep`, which can **move** a
-locus: `chr1:1000 [AGG, AG, AGT]` minreps to `chr1:1002 [G, T]`. The weights name
-that SNP at 1002; the VDS row lives at 1000; the interval filter drops it before
-`split_multi` ever runs. Such variants are silently never scored. Also note
-`hl.vds.split_multi(vds)` is called with the default `filter_changed_loci=False`,
-which **raises** on a locus-shifting variant that does survive the filter.
+**`filter_changed_loci=False` is an armed tripwire. Do not disarm it.**
+`hl.min_rep`, which `split_multi` applies, trims shared bases. Trimming a shared
+**suffix** is safe and is *relied upon*: `[AGGGC, A, GGGGC]` reduces to `A/G` at
+the same locus, which is how a GWAS names that SNP
+(`test_normalizes_a_non_minimal_representation`). Trimming a shared **prefix**
+instead **moves** the locus (`[GG, G, GT]` → `G/T` one base downstream), and hail
+will not relocate a row — it can only raise, or silently drop the allele.
+
+No variant of the prefix-trimming shape exists in All of Us: **0 of 6,001,424 ALT
+alleles** in a 10Mb window, 21% of whose rows were multi-allelic
+(`notebooks/measure_minrep_locus_shift.ipynb`). So the raising default is not a
+crash risk — it is a tripwire against a future VDS release changing variant
+representation. A diff that sets `filter_changed_loci=True` to "fix a crash" is
+trading a loud failure for silently dropped variants. Reject it.
 
 **No strand harmonization exists anywhere.** Weights are assumed to be on the
 same strand and genome build as the VDS. Palindromic variants (A/T, C/G) are not

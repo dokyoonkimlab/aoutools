@@ -85,8 +85,8 @@ def test_hom_ref_samples_are_absent_from_the_entry_stream(vds_lgt):
     per_sample = dict(zip(visited["s"], visited["n"], strict=True))
 
     assert per_sample["S1"] == 0, "hom-ref sample must not be visited at all"
-    assert per_sample["S2"] == 5  # a call at every one of the five sites
-    assert per_sample["S3"] == 5
+    assert per_sample["S2"] == 6  # a call at every one of the six sites
+    assert per_sample["S3"] == 6
     assert per_sample["S4"] == 1  # the no-call entry at chr1:2000 exists
 
 
@@ -130,6 +130,73 @@ def test_handles_multiallelic_sites(vds_lgt):
     assert n_matched == 1
     assert prs["S2"] == 0.0  # C/G -- carries the other ALT
     assert prs["S3"] == 1.0  # C/T
+
+
+def test_normalizes_a_non_minimal_representation(vds_lgt):
+    """CORRECT, and this is the normalization the library actually relies on.
+
+    `chr1:6000` is stored as `[AGGGC, A, GGGGC]` -- a deletion sharing a record
+    with a SNP. No GWAS names that SNP that way; it names it `A/G`. `min_rep`,
+    applied by `hl.vds.split_multi`, trims the shared **suffix** GGGC and
+    reduces the pair to `A/G` at this same locus -- exactly the key the weights
+    join on. A multi-allelic, non-minimally-represented variant is therefore
+    scored correctly.
+
+    The contrast that matters: trimming a shared **prefix** would instead *move*
+    the locus, and `split_multi` refuses to relocate rows. See
+    `test_a_locus_shifting_variant_raises_rather_than_vanishing`. Suffix
+    trimming is safe; prefix trimming is not. Only the former occurs in AoU.
+    """
+    raw = hl.Table.parallelize(
+        [{"chr": "chr1", "pos": 6000, "effect_allele": "G",
+          "noneffect_allele": "A", "weight": 1.0}],
+        hl.tstruct(
+            chr=hl.tstr, pos=hl.tint32, effect_allele=hl.tstr,
+            noneffect_allele=hl.tstr, weight=hl.tfloat64,
+        ),
+    )  # fmt: skip
+    prs, n_matched = score(vds_lgt, raw)
+
+    assert n_matched == 1, "the A/G weights row must match [AGGGC, A, GGGGC]"
+    assert prs["S1"] == 0.0  # hom-ref
+    assert prs["S2"] == 1.0  # carries one copy of the SNP allele
+    assert prs["S3"] == 2.0  # homozygous for it
+    assert prs["S4"] == 0.0  # hom-ref
+
+
+def test_a_locus_shifting_variant_raises_rather_than_vanishing(
+    vds_locus_shifting,
+):
+    """A TRIPWIRE, deliberately left armed. Do not "fix" this by passing
+    `filter_changed_loci=True`.
+
+    `chr1:1001 [GG, G, GT]` minreps its SNP allele to `G/T` at chr1:**1002**.
+    `hl.vds.split_multi` will not relocate a row, so it offers only two
+    behaviours: raise (`filter_changed_loci=False`, the default) or silently
+    drop the allele (`True`). Neither one scores the variant.
+
+    We keep the raising default on purpose. **No variant of this shape exists
+    in All of Us**: 0 of 6,001,424 ALT alleles in a 10Mb window of chr1
+    shifted, and 21% of those rows were multi-allelic
+    (`notebooks/measure_minrep_locus_shift.ipynb`). So the exception is not a
+    crash risk -- it is a tripwire. If a future VDS release ever changes the
+    variant representation, the run fails loudly instead of quietly dropping
+    variants and producing a plausible, wrong score.
+
+    Setting `filter_changed_loci=True` would convert that tripwire into exactly
+    the kind of silent data loss the rest of this file exists to prevent.
+    """
+    raw = hl.Table.parallelize(
+        [{"chr": "chr1", "pos": 1002, "effect_allele": "T",
+          "noneffect_allele": "G", "weight": 1.0}],
+        hl.tstruct(
+            chr=hl.tstr, pos=hl.tint32, effect_allele=hl.tstr,
+            noneffect_allele=hl.tstr, weight=hl.tfloat64,
+        ),
+    )  # fmt: skip
+
+    with pytest.raises(Exception, match="non-left-aligned"):
+        score(vds_locus_shifting, raw)
 
 
 def test_does_not_invent_a_genotype_for_a_no_call(vds_lgt, raw_weights):
