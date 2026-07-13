@@ -15,11 +15,22 @@ __author__ = "Jaehyun Joo"
 # This makes the 'prs' submodule directly accessible after importing
 # 'aoutools'.
 from . import prs
-from ._workbench import DEFAULT_VDS_PATH, get_vds_path, init_hail
+from ._workbench import (
+    DEFAULT_VDS_PATH,
+    get_vds_path,
+    get_workspace_bucket,
+    init_hail,
+)
 
 # Specifies which objects are imported when a user runs 'from aoutools import
 # *'.
-__all__ = ["DEFAULT_VDS_PATH", "get_vds_path", "init_hail", "prs"]
+__all__ = [
+    "DEFAULT_VDS_PATH",
+    "get_vds_path",
+    "get_workspace_bucket",
+    "init_hail",
+    "prs",
+]
 
 # If the application using this library doesn't configure logging, this line
 # adds a "do-nothing" handler to prevent a "No handlers could be found"

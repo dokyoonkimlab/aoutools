@@ -1,6 +1,6 @@
 """Tests for the Workbench environment helpers.
 
-These pin down two things the Workbench changed under us, and which every
+These pin down three things the Workbench changed under us, each of which every
 notebook would otherwise get wrong in its own way:
 
 * `hl.init(default_reference=...)` is deprecated. The reference genome must be
@@ -8,14 +8,93 @@ notebook would otherwise get wrong in its own way:
 * `WGS_VDS_PATH` is no longer exported, so the VDS path has to fall back to a
   pinned default -- and that fallback must be loud, because it names a specific
   All of Us data release that this package cannot check against the workspace.
+* `WORKSPACE_BUCKET` is no longer exported *either*, and it cannot simply be
+  exported by the user: a variable set in a Jupyter terminal never reaches the
+  kernel, because the two are sibling children of the Jupyter server. So the
+  bucket is recovered from the gcsfuse mount table instead.
 """
 
 import warnings
-from unittest.mock import patch
+from unittest.mock import mock_open, patch
 
 import pytest
 
-from aoutools._workbench import DEFAULT_VDS_PATH, get_vds_path, init_hail
+from aoutools._workbench import (
+    DEFAULT_VDS_PATH,
+    get_vds_path,
+    get_workspace_bucket,
+    init_hail,
+)
+
+# A realistic /proc/mounts, with the workspace bucket fuse-mounted.
+MOUNTS = (
+    "proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n"
+    "/dev/sda1 / ext4 rw,relatime 0 0\n"
+    "workspace-bucket-wb-swift-orange-3552 "
+    "/home/dataproc/workspace/workspace-bucket fuse.gcsfuse "
+    "rw,nosuid,nodev,relatime,user_id=1000 0 0\n"
+)
+MOUNTS_NO_FUSE = (
+    "proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n"
+    "/dev/sda1 / ext4 rw,relatime 0 0\n"
+)
+
+
+class TestGetWorkspaceBucket:
+    """Resolution: explicit argument, then env var, then the gcsfuse mount."""
+
+    def test_explicit_bucket_wins(self, monkeypatch):
+        monkeypatch.setenv("WORKSPACE_BUCKET", "gs://from-env")
+
+        assert get_workspace_bucket("gs://explicit") == "gs://explicit"
+
+    def test_adds_the_gs_prefix_and_strips_a_trailing_slash(self):
+        assert get_workspace_bucket("my-bucket/") == "gs://my-bucket"
+
+    def test_env_var_is_used_when_set(self, monkeypatch):
+        monkeypatch.setenv("WORKSPACE_BUCKET", "gs://from-env")
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            assert get_workspace_bucket() == "gs://from-env"
+
+    def test_recovers_the_bucket_from_the_gcsfuse_mount(self, monkeypatch):
+        """The case that matters on the current (Verily) platform.
+
+        `WORKSPACE_BUCKET` is not exported, and the user cannot fix that from a
+        terminal -- the kernel is a sibling process and never sees it. But the
+        bucket is fuse-mounted into the workspace regardless, and gcsfuse puts
+        the bucket name in the *device* field of the mount table.
+        """
+        monkeypatch.delenv("WORKSPACE_BUCKET", raising=False)
+
+        with patch("builtins.open", mock_open(read_data=MOUNTS)):
+            with pytest.warns(UserWarning, match="gcsfuse"):
+                bucket = get_workspace_bucket()
+
+        assert bucket == "gs://workspace-bucket-wb-swift-orange-3552"
+
+    def test_raises_with_instructions_when_nothing_works(self, monkeypatch):
+        """The error has to say how to fix it, because the obvious fix (export
+        it from a terminal) is the one thing that does NOT work."""
+        monkeypatch.delenv("WORKSPACE_BUCKET", raising=False)
+
+        with patch("builtins.open", mock_open(read_data=MOUNTS_NO_FUSE)):
+            with pytest.raises(OSError) as excinfo:
+                get_workspace_bucket()
+
+        message = str(excinfo.value)
+        assert "os.environ" in message, "must show the fix that works"
+        assert "terminal" in message, "must warn off the fix that does not"
+
+    def test_missing_proc_mounts_is_not_a_crash(self, monkeypatch):
+        """No /proc/mounts on macOS. Must degrade to the clear error, not an
+        OSError from the open() itself."""
+        monkeypatch.delenv("WORKSPACE_BUCKET", raising=False)
+
+        with patch("builtins.open", side_effect=FileNotFoundError):
+            with pytest.raises(OSError, match="Could not determine"):
+                get_workspace_bucket()
 
 
 class TestGetVdsPath:

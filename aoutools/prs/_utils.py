@@ -8,6 +8,8 @@ from time import perf_counter
 import hail as hl
 import hailtop.fs as hfs
 
+from aoutools._workbench import get_workspace_bucket
+
 # Configure a logger for module-level use.
 logger = logging.getLogger(__name__)
 
@@ -63,19 +65,19 @@ def _stage_local_file_to_gcs(file_path: str, sub_dir: str) -> str:
     FileNotFoundError
         If a local `file_path` does not exist.
     EnvironmentError
-        If the `WORKSPACE_BUCKET` environment variable is not set.
+        If the workspace bucket cannot be determined. See
+        `aoutools.get_workspace_bucket`, which explains why exporting
+        `WORKSPACE_BUCKET` from a Jupyter terminal does not work.
     """
     if file_path.startswith("gs://"):
         return file_path
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"Local file does not exist: {file_path}")
 
-    workspace_bucket = os.getenv("WORKSPACE_BUCKET")
-    if not workspace_bucket:
-        raise OSError(
-            "The 'WORKSPACE_BUCKET' environment variable is not set. "
-            "This is required to stage local files to GCS."
-        )
+    # Not `os.getenv("WORKSPACE_BUCKET")` directly: current All of Us (Verily)
+    # images do not export it, so this has to fall back to the gcsfuse mount
+    # table. See `aoutools._workbench.get_workspace_bucket`.
+    workspace_bucket = get_workspace_bucket()
 
     gcs_path = os.path.join(
         workspace_bucket, "data", sub_dir, os.path.basename(file_path)

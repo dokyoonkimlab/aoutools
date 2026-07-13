@@ -25,8 +25,12 @@ class TestStageLocalFileToGCS:
         mocker.patch(
             "aoutools.prs._utils.os.path.abspath", side_effect=lambda x: x
         )
-        mocker.patch(
-            "aoutools.prs._utils.os.getenv", return_value="gs://fake-bucket"
+        # The bucket comes from `get_workspace_bucket`, not straight from the
+        # environment: current All of Us images do not export WORKSPACE_BUCKET,
+        # so it has to fall back to the gcsfuse mount table.
+        self.mock_bucket = mocker.patch(
+            "aoutools.prs._utils.get_workspace_bucket",
+            return_value="gs://fake-bucket",
         )
         mocker.patch("aoutools.prs._utils.hfs.exists", return_value=False)
         self.mock_hfs_copy = mocker.patch("aoutools.prs._utils.hfs.copy")
@@ -77,15 +81,35 @@ class TestStageLocalFileToGCS:
         with pytest.raises(FileNotFoundError):
             _stage_local_file_to_gcs("/tmp/non_existent.txt", "my-data")
 
-    def test_raises_error_if_workspace_bucket_not_set(self, mocker):
+    def test_raises_if_the_workspace_bucket_cannot_be_found(self):
         """
-        Tests that an EnvironmentError is raised if the WORKSPACE_BUCKET
-        environment variable is not set.
+        Tests that the failure to locate the workspace bucket propagates.
+
+        `get_workspace_bucket` raises `OSError` with instructions when it can
+        find the bucket neither in the environment nor in the gcsfuse mount
+        table. Staging must not swallow that: without a bucket there is nowhere
+        to put the file, and Hail's cluster cannot read the local disk.
         """
-        # Override the default mock for os.getenv for this test
-        mocker.patch("aoutools.prs._utils.os.getenv", return_value=None)
-        with pytest.raises(EnvironmentError):
+        self.mock_bucket.side_effect = OSError(
+            "Could not determine the workspace bucket."
+        )
+        with pytest.raises(OSError, match="workspace bucket"):
             _stage_local_file_to_gcs("/tmp/local_file.txt", "my-data")
+
+    def test_does_not_read_the_environment_directly(self, mocker):
+        """
+        A regression guard. `WORKSPACE_BUCKET` is not exported on current All of
+        Us (Verily) images, and a user cannot fix that by exporting it from a
+        Jupyter terminal -- the kernel is a sibling process and never sees it.
+        So reading `os.getenv` here would strand every user with a local weights
+        file. The lookup must go through `get_workspace_bucket`.
+        """
+        mocker.patch("aoutools.prs._utils.os.getenv", return_value=None)
+
+        result = _stage_local_file_to_gcs("/tmp/local_file.txt", "my-data")
+
+        assert result == "gs://fake-bucket/data/my-data/local_file.txt"
+        self.mock_bucket.assert_called_once()
 
 
 class TestStandardizeChromosomeColumn:
