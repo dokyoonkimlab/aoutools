@@ -182,3 +182,14 @@ lint = { features = ["lint"], no-default-feature = true }
 markers = [
     "integration: runs against a real hail Spark backend (slow, needs a JVM)",
 ]
+# The two test tiers are separate directories with no __init__.py, so under
+# pytest's default "prepend" import mode a file of the same name in each (say,
+# tests/prs/test_reader.py and tests/integration/test_reader.py) collides: both
+# want the module name `test_reader`, and collection dies. The marker does not
+# save you -- it deselects tests, it does not stop them being imported, so both
+# `test` and `test-integration` hit it.
+#
+# importlib mode gives each file a unique module name derived from its path, so
+# the tiers can mirror each other's filenames, which is the natural thing to
+# want.
+addopts = "--import-mode=importlib"
