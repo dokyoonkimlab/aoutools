@@ -39,6 +39,12 @@ VARIANTS = [
     # Same mismatch, mirrored: effect allele is G, which is absent from the VDS.
     ("chr1:4000", ["A", "T"], {"S2": [0, 1], "S3": [1, 1]}),
     # Multi-allelic. S2 is C/G, S3 is C/T. Weights name T as the effect allele.
+    #
+    # This site is also where a REF-effect weight goes wrong if the dosage is
+    # taken from the *downcoded* genotype: at the split [C, T] row, S2's G is
+    # rewritten to the reference, so its GT is 0/0 and it looks homozygous
+    # reference -- but it carries only ONE C, not two. See
+    # test_ref_effect_at_a_multiallelic_site.
     ("chr1:5000", ["C", "G", "T"], {"S2": [0, 1], "S3": [0, 2]}),
     # Multi-allelic AND not minimally represented, but the locus does NOT move.
     # A deletion (AGGGC -> A) shares this record with a SNP (AGGGC -> GGGGC).
@@ -51,6 +57,12 @@ VARIANTS = [
     # S2 carries the SNP, S3 is homozygous for it. No weights row in WEIGHTS
     # names this locus -- the test supplies its own.
     ("chr1:6000", ["AGGGC", "A", "GGGGC"], {"S2": [0, 2], "S3": [2, 2]}),
+    # Multi-allelic, and the worst case for a REF-effect weight. S2 is C/C --
+    # HOMOZYGOUS for an ALT that the weights row does not name. At the split
+    # [A, G] row its genotype downcodes to 0/0, which is indistinguishable from
+    # homozygous-reference, so a dosage taken from the downcoded GT would credit
+    # S2 with TWO copies of A when it carries NONE.
+    ("chr1:7000", ["A", "C", "G"], {"S2": [1, 1], "S3": [0, 2]}),
 ]
 
 # Every weight is 1.0, so `prs` is literally the summed count of effect-allele

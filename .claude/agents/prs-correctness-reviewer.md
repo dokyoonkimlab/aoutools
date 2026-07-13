@@ -27,12 +27,22 @@ plainly rather than manufacturing findings.
 
 Read the code before trusting this summary — it is a map, not the territory.
 
-There is **one** scoring path. `hl.vds.split_multi` splits multi-allelic sites,
-then `_key_weights_by_variant` keys the weights on `(locus, sorted allele pair)`.
-Dosage is `mt.GT.n_alt_alleles()` — a count of **ALT** copies. Because the join
-key carries the alleles, the key *is* the allele check: a weights row cannot
-match a variant with different alleles. Because the pair is **sorted**, it
-matches regardless of which side the effect allele sits on.
+There is **one** scoring path. `_split_multi_with_total_dosage` splits
+multi-allelic sites, then `_key_weights_by_variant` keys the weights on
+`(locus, sorted allele pair)`. Because the join key carries the alleles, the key
+*is* the allele check: a weights row cannot match a variant with different
+alleles. Because the pair is **sorted**, it matches regardless of which side the
+effect allele sits on.
+
+There are **two dosages**, and they are not interchangeable:
+
+* `mt.GT.n_alt_alleles()` — copies of **this row's ALT**, post-split.
+* `mt.n_non_ref` — the sample's **total** non-reference allele count, read off
+  its **pre-split** local genotype and carried through the split as an entry
+  field.
+
+`_entry_contribution` picks between them on `ref_is_effect`. See the downcoding
+section below; collapsing them into one is Finding 6 returning.
 
 **The fact everything else follows from: a hom-ref sample is not an entry.**
 In a VDS, `variant_data` holds entries only for samples with a non-reference call
@@ -58,20 +68,33 @@ weights file and a global flag silently dropped every row that disagreed with
 it. The PGS Catalog does not harmonize the effect allele onto the ALT, so a
 mixed-orientation file is the normal case.
 
-When the effect allele is the REF, the true contribution is `w * (2 - n_alt)`,
-which the code splits into two terms:
+When the effect allele is the REF, the true contribution is
+`w * (2 - n_non_ref)`, which the code splits into two terms:
 
 ```
-w * (2 - n_alt)  ==  2w  -  w * n_alt
-                     └┬┘     └───┬───┘
-              row-level    per-entry, aggregated over the entry stream
+w * (2 - n_non_ref)  ==  2w  -  w * n_non_ref
+                         └┬┘     └─────┬─────┘
+                  row-level    per-entry, aggregated over the entry stream
 ```
 
-The per-entry term is already correct for absent samples (`n_alt` is 0, so the
-term is 0). The `2w` is genotype-independent, so it is added as a **row-level
+The per-entry term is already correct for absent samples (`n_non_ref` is 0, so
+the term is 0). The `2w` is genotype-independent, so it is added as a **row-level
 constant** reaching every sample — the only way to reach hom-ref samples at all.
 
-Three ways this goes wrong, all silent:
+Four ways this goes wrong, all silent:
+
+0. **The wrong dosage — `n_alt` instead of `n_non_ref`.** The identity above
+   only holds if the subtracted count covers **every** non-reference allele.
+   `split_multi` **downcodes**: at the `[C,T]` row of a `C/G,T` site, a C/G
+   carrier's G is rewritten to REF, so its `GT` is `0/0` and `n_alt` is 0 —
+   identical to a real hom-ref sample. It then collects the full `2w` and is
+   scored as carrying **two** copies of C when it carries one. A sample
+   *homozygous* for the unnamed ALT is credited two copies of an allele it does
+   not have at all. This was Finding 6, it was live in `dev`, and every test
+   passed — at a bi-allelic site the two counts are equal. 21% of AoU rows are
+   multi-allelic and the PGS Catalog does not harmonize onto the ALT, so this is
+   the normal case, not a corner. The mirror error is just as bad: using
+   `n_non_ref` for an **ALT**-effect row scores a C/G carrier as holding a T.
 
 1. **Offset applied to an unmatched row.** It must only be summed over rows that
    actually matched a variant in the VDS. Crediting `2w` for a variant not in the
@@ -115,11 +138,14 @@ library is affordable on the All of Us VDS.
 
 ## What to check, in priority order
 
-1. **Allele orientation and the offset.** Does the effect allele still line up
-   with the dosage being counted, and does every REF-effect row still carry its
-   `2w`? A sign error inverts the score's direction; a lost offset zeroes every
-   hom-ref sample. Both still produce a perfectly reasonable-looking distribution.
-   Re-read the three failure modes above.
+1. **Allele orientation, the dosage, and the offset.** Does the effect allele
+   still line up with the dosage being counted — and is it the *right* dosage
+   (`n_non_ref` for REF-effect, `GT.n_alt_alleles()` for ALT-effect)? Does every
+   REF-effect row still carry its `2w`? A sign error inverts the score's
+   direction; a lost offset zeroes every hom-ref sample; the wrong dosage
+   silently inflates carriers of other ALTs at multi-allelic sites. All three
+   still produce a perfectly reasonable-looking distribution. Re-read the four
+   failure modes above.
 
 2. **Join keys.** The weights must be keyed on `(locus, sorted allele pair)`,
    matching the post-split MatrixTable. The sort is what lets a row match

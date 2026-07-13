@@ -15,6 +15,7 @@ from ._calculator_utils import (
     _orient_weight_and_offset,
     _prepare_samples_to_keep,
     _prepare_weights_for_chunking,
+    _split_multi_with_total_dosage,
     _validate_and_prepare_weights_table,
 )
 from ._config import PRSConfig
@@ -134,8 +135,8 @@ def _build_prs_agg_expr(
     This expression sums `weight_per_alt_copy * dosage` over the entries of all
     valid variants, and adds the row-level `hom_ref_offset` term that entry
     aggregation cannot reach. A variant is valid if it is matched in the weights
-    table. Rows are split before this runs, so `GT.n_alt_alleles()` is the
-    dosage. See `_orient_weight_and_offset`.
+    table. Which dosage is counted depends on the row's orientation -- see
+    `_entry_contribution` and `_orient_weight_and_offset`.
 
     Unlike the single-score path, batch mode never filters rows -- it masks with
     `hl.if_else(is_valid, ...)` -- so **both** terms must be gated on
@@ -161,10 +162,12 @@ def _build_prs_agg_expr(
     weights_info = mt[f"weights_info_{score_name}"]
     is_valid = mt[f"is_valid_{score_name}"]
 
-    weight_per_alt_copy, hom_ref_offset = _orient_weight_and_offset(
-        mt, weights_info
+    weight_per_alt_copy, hom_ref_offset, ref_is_effect = (
+        _orient_weight_and_offset(mt, weights_info)
     )
-    contribution = _entry_contribution(mt, weight_per_alt_copy, hom_ref_offset)
+    contribution = _entry_contribution(
+        mt, weight_per_alt_copy, hom_ref_offset, ref_is_effect
+    )
 
     # Aggregated over entries: hom-ref samples are absent and never visited.
     entry_term = hl.agg.sum(hl.if_else(is_valid, contribution, 0.0))
@@ -224,11 +227,11 @@ def _calculate_prs_chunk_batch(
         "Planning: Splitting multi-allelic variants",
         config.detailed_timings,
     ):
-        # `filter_changed_loci` is left at False (raise) on purpose. See the
-        # long comment on the same call in `_calculator.py`: setting it True
-        # would silently drop any variant whose locus min_rep moves, and the
-        # raising default is a deliberate tripwire.
-        mt = hl.vds.split_multi(vds).variant_data
+        # Also carries each entry's total non-ref count (`n_non_ref`) through
+        # the split, which REF-effect rows need; and leaves
+        # `filter_changed_loci` at False (raise) on purpose. See
+        # `_split_multi_with_total_dosage`.
+        mt = _split_multi_with_total_dosage(vds)
         mt_key = mt.row_key
 
     # Step 2: Annotate MatrixTable rows with weights info and validity masks

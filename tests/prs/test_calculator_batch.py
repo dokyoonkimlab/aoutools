@@ -145,7 +145,11 @@ class TestBatchHelpers:
         aggregators for each score.
         """
         # Arrange
-        mock_hl = mocker.patch("aoutools.prs._calculator_batch.hl", MagicMock())
+        mocker.patch("aoutools.prs._calculator_batch.hl", MagicMock())
+        mock_split = mocker.patch(
+            "aoutools.prs._calculator_batch._split_multi_with_total_dosage",
+            return_value=MagicMock(),
+        )
         mock_build_rows = mocker.patch(
             "aoutools.prs._calculator_batch._build_row_annotations",
             return_value={"anno1": MagicMock()},
@@ -155,8 +159,9 @@ class TestBatchHelpers:
             return_value=MagicMock(),
         )
         mock_vds = MagicMock()
-        # The MatrixTable is always taken from the *split* VDS.
-        mock_mt = mock_hl.vds.split_multi.return_value.variant_data
+        # The MatrixTable always comes from the split VDS, which also carries
+        # each entry's pre-split total non-ref count through the split.
+        mock_mt = mock_split.return_value
 
         # Ensure annotate_rows returns the same mock object so that the
         # subsequent chained calls are made on the configured mock.

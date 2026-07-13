@@ -178,30 +178,48 @@ class TestOrientWeightAndOffset:
         """Dosage is `GT.n_alt_alleles()`, so an ALT effect allele needs the
         weight as-is. A hom-ref sample carries no copies of it and correctly
         contributes nothing -- hence no offset."""
-        weights_info, (weight_per_alt_copy, hom_ref_offset) = self._orient(
-            mocker, ref_is_effect=False
-        )
+        (
+            weights_info,
+            (
+                weight_per_alt_copy,
+                hom_ref_offset,
+                ref_is_effect,
+            ),
+        ) = self._orient(mocker, ref_is_effect=False)
 
         assert weight_per_alt_copy is weights_info.weight
         assert hom_ref_offset == 0.0
+        assert ref_is_effect is False
 
     def test_effect_allele_on_the_ref_negates_the_weight_and_offsets_by_2w(
         self, mocker
     ):
-        """A REF effect allele means the true contribution is `w * (2 - n_alt)`,
-        which is `2w - w * n_alt`. The per-entry term therefore carries the
-        *negated* weight, and the `2w` becomes a row-level offset -- the only
-        way to reach hom-ref samples, who have no entry to aggregate over.
+        """A REF effect allele means the true contribution is
+        `w * (2 - n_non_ref)`, which is `2w - w * n_non_ref`. The per-entry term
+        therefore carries the *negated* weight, and the `2w` becomes a row-level
+        offset -- the only way to reach hom-ref samples, who have no entry to
+        aggregate over.
 
         Dropping the negation inverts the sample-varying term (highest genetic
         risk scores lowest) while still producing a plausible distribution.
         Dropping the offset silently zeroes every hom-ref sample.
+
+        `ref_is_effect` is returned so `_entry_contribution` knows to count
+        `n_non_ref` rather than the downcoded `GT.n_alt_alleles()`; at a
+        multi-allelic site those differ. See
+        `tests/integration/test_allele_matching.py`.
         """
-        weights_info, (weight_per_alt_copy, hom_ref_offset) = self._orient(
-            mocker, ref_is_effect=True
-        )
+        (
+            weights_info,
+            (
+                weight_per_alt_copy,
+                hom_ref_offset,
+                ref_is_effect,
+            ),
+        ) = self._orient(mocker, ref_is_effect=True)
 
         assert weight_per_alt_copy is weights_info.weight.__neg__.return_value
         assert weight_per_alt_copy is not weights_info.weight
         # `2.0 * weight` dispatches to the mock's __rmul__.
         assert hom_ref_offset is weights_info.weight.__rmul__.return_value
+        assert ref_is_effect is True

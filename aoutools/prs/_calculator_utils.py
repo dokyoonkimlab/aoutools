@@ -174,18 +174,93 @@ def _key_weights_by_variant(ht: hl.Table) -> hl.Table:
     ).key_by("locus", "alleles")
 
 
+def _split_multi_with_total_dosage(
+    vds: hl.vds.VariantDataset,
+) -> hl.MatrixTable:
+    """
+    Splits multi-allelic sites, preserving each entry's *total* non-ref count.
+
+    `hl.vds.split_multi` emits one bi-allelic row per ALT allele and
+    **downcodes** the genotype: at the `[C, T]` row of a `C / G,T` site, a
+    sample carrying the G has its G rewritten to the reference, so its `GT` is
+    `0/0` and `GT.n_alt_alleles()` is 0 -- identical to a genuine
+    homozygous-reference sample.
+
+    That is correct when counting copies of a specific ALT (the sample really
+    does carry zero copies of T), but it destroys the information needed to
+    count copies of the **REF**: `2 - n_alt` is only the reference count when
+    `n_alt` covers *every* non-reference allele, and after downcoding it does
+    not.
+
+    So before splitting, each entry is annotated with `n_non_ref` -- the number
+    of non-reference alleles in its **pre-split** local genotype, across all
+    ALTs at the site. Extra entry fields survive `split_multi`, so this is
+    carried through to every row the site is split into, and
+    `_entry_contribution` uses it for REF-effect variants. See
+    `_orient_weight_and_offset` for the arithmetic.
+
+    Parameters
+    ----------
+    vds : hail.vds.VariantDataset
+        An interval-filtered VariantDataset, with local (`LGT`) or global (`GT`)
+        genotypes.
+
+    Returns
+    -------
+    hail.MatrixTable
+        The split `variant_data`, with a `GT` entry field (downcoded, per-ALT)
+        and an `n_non_ref` entry field (total, pre-split).
+    """
+    vd = vds.variant_data
+
+    # All of Us ships local genotypes (LGT/LA). `LGT.n_alt_alleles()` counts
+    # local non-zero indices, and local index 0 is always the reference, so
+    # this is the total number of non-reference alleles the sample carries at
+    # the site -- exactly what downcoding is about to destroy.
+    genotype = vd.LGT if "LGT" in vd.entry.dtype else vd.GT
+    vd = vd.annotate_entries(n_non_ref=genotype.n_alt_alleles())
+
+    # `filter_changed_loci` is left at its default of False, which *raises* if
+    # `hl.min_rep` moves a variant's locus. That is deliberate; do not set it
+    # to True to silence an error.
+    #
+    # min_rep trims shared bases. Trimming a shared SUFFIX is safe, and is
+    # relied upon: it reduces [AGGGC, A, GGGGC] to A/G at the same locus, which
+    # is how a GWAS names that SNP. Trimming a shared PREFIX instead MOVES the
+    # locus ([GG, G, GT] -> G/T one base downstream), and hail will not
+    # relocate a row -- it can only raise, or drop the allele. Dropping it
+    # would mean the variant silently never scores.
+    #
+    # No variant of the prefix-trimming shape exists in All of Us: 0 of
+    # 6,001,424 ALT alleles in a 10Mb window, 21% of whose rows were
+    # multi-allelic (notebooks/measure_minrep_locus_shift.ipynb). So this is
+    # not a crash risk, it is a tripwire: if a future VDS release changes
+    # variant representation we fail loudly, instead of scoring silently
+    # wrong. Pinned by
+    # tests/integration/test_allele_matching.py
+    # ::test_a_locus_shifting_variant_raises_rather_than_vanishing
+    split = hl.vds.split_multi(hl.vds.VariantDataset(vds.reference_data, vd))
+    return split.variant_data
+
+
 def _orient_weight_and_offset(
     mt: hl.MatrixTable, weights_info: hl.expr.StructExpression
-) -> tuple[hl.expr.Float64Expression, hl.expr.Float64Expression]:
+) -> tuple[
+    hl.expr.Float64Expression,
+    hl.expr.Float64Expression,
+    hl.expr.BooleanExpression,
+]:
     """
     Resolves a matched weights row against the VDS's own REF/ALT orientation.
 
-    Returns `(weight_per_alt_copy, hom_ref_offset)`. The score for a variant is
+    Returns `(weight_per_alt_copy, hom_ref_offset, ref_is_effect)`. The score
+    for a variant is
 
-        agg.sum(weight_per_alt_copy * GT.n_alt_alleles())  +  hom_ref_offset
+        agg.sum(weight_per_alt_copy * dosage)  +  hom_ref_offset
 
     where the first term is aggregated over *entries* and the second is a
-    row-level constant added to every sample.
+    row-level constant added to every sample. `ref_is_effect` selects which
+    dosage the entry term counts; see `_entry_contribution`.
 
     Why the offset exists
     ---------------------
@@ -193,7 +268,7 @@ def _orient_weight_and_offset(
     and a homozygous-reference sample correctly contributes 0.
 
     When the effect allele is the **REF**, the contribution is `w * (2 -
-    n_alt)`, and a hom-ref sample should get the full `2w`. But a hom-ref
+    n_non_ref)`, and a hom-ref sample should get the full `2w`. But a hom-ref
     sample has **no entry** in `variant_data` -- hail filters absent entries out
     of the entry stream, so no aggregator ever visits it and no per-entry
     default can reach it. Confirmed on the real All of Us VDS: 94 of 200 samples
@@ -201,12 +276,18 @@ def _orient_weight_and_offset(
 
     Rewriting the contribution as
 
-        w * (2 - n_alt)  ==  2w  -  w * n_alt
+        w * (2 - n_non_ref)  ==  2w  -  w * n_non_ref
 
     splits it into a part that is already correct for absent samples (their
-    `n_alt` is 0, so `-w * n_alt` is 0) and a constant `2w` that does not depend
-    on the genotype at all. The constant is therefore recoverable as a row-level
-    term, with no densification and no extra pass over the VDS.
+    `n_non_ref` is 0, so `-w * n_non_ref` is 0) and a constant `2w` that does
+    not depend on the genotype at all. The constant is therefore recoverable as
+    a row-level term, with no densification and no extra pass over the VDS.
+
+    **`n_non_ref` is not `GT.n_alt_alleles()`** at a multi-allelic site. See
+    `_split_multi_with_total_dosage`: after splitting, `GT` counts copies of one
+    specific ALT, and a sample carrying a *different* ALT downcodes to `0/0`.
+    Using it here would score that sample as two copies of the reference when it
+    carries one, or none.
 
     The caller must only apply the offset for rows that actually matched a
     variant in the VDS. Crediting `2w` for a variant that is not in the callset
@@ -221,8 +302,9 @@ def _orient_weight_and_offset(
 
     Returns
     -------
-    tuple of hail.expr.Float64Expression
-        The per-ALT-copy weight and the hom-ref offset for this row.
+    tuple
+        The per-copy weight, the hom-ref offset, and whether the effect allele
+        is the reference base for this row.
     """
     ref_is_effect = weights_info.effect_allele == mt.alleles[0]
     weight = weights_info.weight
@@ -230,22 +312,36 @@ def _orient_weight_and_offset(
     weight_per_alt_copy = hl.if_else(ref_is_effect, -weight, weight)
     hom_ref_offset = hl.if_else(ref_is_effect, 2.0 * weight, 0.0)
 
-    return weight_per_alt_copy, hom_ref_offset
+    return weight_per_alt_copy, hom_ref_offset, ref_is_effect
 
 
 def _entry_contribution(
     mt: hl.MatrixTable,
     weight_per_alt_copy: hl.expr.Float64Expression,
     hom_ref_offset: hl.expr.Float64Expression,
+    ref_is_effect: hl.expr.BooleanExpression,
 ) -> hl.expr.Float64Expression:
     """
     The per-entry term of the score, paired with a row-level `hom_ref_offset`.
 
-    For a called genotype this is `weight_per_alt_copy * GT.n_alt_alleles()`.
+    Which dosage is counted depends on the orientation of the row, and the two
+    are **not interchangeable at a multi-allelic site**:
+
+    * effect allele is the **ALT** -- count `GT.n_alt_alleles()`, copies of this
+      row's specific ALT. Downcoding is exactly right here: a sample carrying a
+      different ALT carries zero copies of this one.
+    * effect allele is the **REF** -- count `n_non_ref`, the sample's *total*
+      number of non-reference alleles at the site, taken from its pre-split
+      genotype by `_split_multi_with_total_dosage`. Copies of the reference are
+      `2 - n_non_ref`, and that identity only holds if every non-reference
+      allele is counted. Using the downcoded `GT.n_alt_alleles()` would score a
+      sample carrying a *different* ALT as homozygous reference -- crediting it
+      two copies of an allele it holds one of, or none of.
 
     For a **no-call** -- an entry that exists but whose genotype is unknown --
-    it is `-hom_ref_offset`, which exactly cancels the offset that row adds to
-    every sample. The sample therefore contributes nothing for that variant.
+    the contribution is `-hom_ref_offset`, which exactly cancels the offset that
+    row adds to every sample. The sample therefore contributes nothing for that
+    variant.
 
     That cancellation is the whole reason this function exists. The offset is
     added unconditionally to reach homozygous-reference samples, who have **no
@@ -265,10 +361,13 @@ def _entry_contribution(
     Parameters
     ----------
     mt : hail.MatrixTable
-        A split MatrixTable with a `GT` entry field.
+        A split MatrixTable with `GT` and `n_non_ref` entry fields, as produced
+        by `_split_multi_with_total_dosage`.
     weight_per_alt_copy : hail.expr.Float64Expression
         From `_orient_weight_and_offset`.
     hom_ref_offset : hail.expr.Float64Expression
+        From `_orient_weight_and_offset`.
+    ref_is_effect : hail.expr.BooleanExpression
         From `_orient_weight_and_offset`.
 
     Returns
@@ -276,9 +375,10 @@ def _entry_contribution(
     hail.expr.Float64Expression
         The entry's contribution to the score. Never missing.
     """
+    dosage = hl.if_else(ref_is_effect, mt.n_non_ref, mt.GT.n_alt_alleles())
     return hl.if_else(
         hl.is_defined(mt.GT),
-        weight_per_alt_copy * mt.GT.n_alt_alleles(),
+        weight_per_alt_copy * dosage,
         -hom_ref_offset,
     )
 

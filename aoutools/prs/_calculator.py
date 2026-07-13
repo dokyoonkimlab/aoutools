@@ -15,6 +15,7 @@ from ._calculator_utils import (
     _orient_weight_and_offset,
     _prepare_samples_to_keep,
     _prepare_weights_for_chunking,
+    _split_multi_with_total_dosage,
 )
 from ._config import PRSConfig
 from ._utils import _log_timing
@@ -61,25 +62,13 @@ def _prepare_mt_split(
         "Planning: Splitting multi-allelic variants and joining",
         config.detailed_timings,
     ):
-        # `filter_changed_loci` is left at its default of False, which *raises*
-        # if `hl.min_rep` moves a variant's locus. That is deliberate; do
-        # not set it to True to silence an error.
-        #
-        # min_rep trims shared bases. Trimming a shared SUFFIX is safe, and is
-        # relied upon: it reduces [AGGGC, A, GGGGC] to A/G at the same locus,
-        # which is how a GWAS names that SNP. Trimming a shared PREFIX instead
-        # MOVES the locus ([GG, G, GT] -> G/T one base downstream), and hail
-        # will not relocate a row -- it can only raise, or drop the allele.
-        # Dropping it would mean the variant silently never scores.
-        #
-        # No variant of the prefix-trimming shape exists in All of Us: 0 of
-        # 6,001,424 ALT alleles in a 10Mb window, 21% of whose rows were
-        # multi-allelic (notebooks/measure_minrep_locus_shift.ipynb). So this
-        # is not a crash risk, it is a tripwire: if a future VDS release
-        # changes variant representation we fail loudly, instead of scoring
-        # silently wrong. Pinned by tests/integration/test_allele_matching.py
-        # ::test_a_locus_shifting_variant_raises_rather_than_vanishing
-        mt = hl.vds.split_multi(vds).variant_data
+        # Splits multi-allelic sites, and carries each entry's *total* non-ref
+        # allele count (`n_non_ref`) through the split. Splitting downcodes
+        # other ALTs to the reference, which would otherwise make a sample
+        # carrying a different ALT indistinguishable from a hom-ref sample --
+        # wrong for any REF-effect variant. See `_split_multi_with_total_dosage`
+        # for the mechanism and the deliberate `filter_changed_loci` tripwire.
+        mt = _split_multi_with_total_dosage(vds)
 
         weights_ht_processed = _key_weights_by_variant(weights_table)
         mt = mt.annotate_rows(weights_info=weights_ht_processed[mt.row_key])
@@ -93,20 +82,21 @@ def _prepare_mt_split(
         "Planning: Calculating per-variant dosage",
         config.detailed_timings,
     ):
-        weight_per_alt_copy, hom_ref_offset = _orient_weight_and_offset(
-            mt, mt.weights_info
+        weight_per_alt_copy, hom_ref_offset, ref_is_effect = (
+            _orient_weight_and_offset(mt, mt.weights_info)
         )
         mt = mt.annotate_rows(
             weight_per_alt_copy=weight_per_alt_copy,
             hom_ref_offset=hom_ref_offset,
+            ref_is_effect=ref_is_effect,
         )
 
-        # After splitting, LGT is converted to GT, so we can directly and safely
-        # use the built-in dosage calculator. See the source code for
-        # `hl.vds.split_multi` for details.
         mt = mt.annotate_entries(
             contribution=_entry_contribution(
-                mt, mt.weight_per_alt_copy, mt.hom_ref_offset
+                mt,
+                mt.weight_per_alt_copy,
+                mt.hom_ref_offset,
+                mt.ref_is_effect,
             )
         )
 
@@ -322,13 +312,17 @@ def calculate_prs(
     chr1:10075251 A/G matches VDS alleles ['AGGGC', 'A', 'GGGGC'], because
     'AGGGC' -> 'GGGGC' minimizes to ['A', 'G'] at that same locus.
 
-    Minimal representation can also *move* a variant's locus, and such variants
-    are currently missed. VDS alleles ['AGG', 'AG', 'AGT'] at chr1:1000 minimize
-    to ['AG', 'A'] at chr1:1000 and to ['G', 'T'] at chr1:1002 -- the second
-    shifts, because those two alleles share a leading 'AG'. A weights row naming
-    that SNP sits at chr1:1002, but the VDS row is read by interval from
-    chr1:1000, so it is filtered out before splitting and never scores. See
-    `TODO.md`, Finding 5.
+    Minimal representation can also *move* a variant's locus, when the two
+    alleles share a leading base: ['GG', 'G', 'GT'] at chr1:1001 minimizes its
+    SNP allele to ['G', 'T'] at chr1:**1002**. Hail will not relocate a row, so
+    such a variant **raises** rather than being scored. That is deliberate. No
+    variant of this shape exists in All of Us -- 0 of 6,001,424 ALT alleles
+    measured -- so the exception is a tripwire against a future change in
+    variant representation, not a crash risk. See `TODO.md`, Finding 5.
+
+    Effect alleles may be given in either orientation, and are resolved per row
+    against the VDS's own REF/ALT. The PGS Catalog does not harmonize the effect
+    allele onto the ALT, so a file mixing both is the normal case.
 
     Parameters
     ----------

@@ -8,21 +8,30 @@ today so that a fix is reviewable -- they do not endorse it. See TODO.md.
 
 The mock VDS (weights effect allele in brackets):
 
-  locus       VDS alleles  S1   S2   S3   S4       weights   note
-  chr1:1000   A / G        A/A  A/G  G/G  A/A      [G] / A
-  chr1:2000   A / G        A/A  A/G  G/G  no-call  [A] / G
-  chr1:3000   A / T        A/A  A/T  T/T  A/A      [A] / G   no A/G here
-  chr1:4000   A / T        A/A  A/T  T/T  A/A      [G] / A   no A/G here
-  chr1:5000   C / G,T      C/C  C/G  C/T  C/C      [T] / C
+  locus       VDS alleles        S1   S2   S3   S4       weights   note
+  chr1:1000   A / G              A/A  A/G  G/G  A/A      [G] / A
+  chr1:2000   A / G              A/A  A/G  G/G  no-call  [A] / G
+  chr1:3000   A / T              A/A  A/T  T/T  A/A      [A] / G   no A/G here
+  chr1:4000   A / T              A/A  A/T  T/T  A/A      [G] / A   no A/G here
+  chr1:5000   C / G,T            C/C  C/G  C/T  C/C      [T] / C
+  chr1:6000   AGGGC / A,GGGGC    -/-  -/G  G/G  -/-      [G] / A   min_rep'd
+  chr1:7000   A / C,G            A/A  C/C  A/G  A/A      [A] / G
 
 S1 is homozygous reference at every site, so it has no entry in `variant_data`
 at all. S4 has an entry at chr1:2000 whose genotype is missing -- a no-call.
 
 There is one scoring path: multi-allelics are split, the weights are joined on
 (locus, sorted allele pair), and each matched row is oriented against the VDS's
-own REF/ALT. A REF-effect row contributes `-w * n_alt` per entry plus a
+own REF/ALT. A REF-effect row contributes `-w * n_non_ref` per entry plus a
 row-level `2w` offset applied to every sample -- the only way to reach a hom-ref
 sample, which has no entry at all.
+
+`n_non_ref` is the sample's **total** non-reference allele count, read off its
+pre-split genotype. It is deliberately *not* the post-split
+`GT.n_alt_alleles()`, which counts copies of one specific ALT: splitting
+downcodes every other ALT to the reference, so at a multi-allelic site a carrier
+of a different ALT would otherwise be scored as homozygous reference. chr1:5000
+and chr1:7000 exist to pin that.
 
 Two things were removed. The non-split path silently dropped every hom-ref
 sample at a REF-effect variant, reordering the cohort. The global
@@ -85,8 +94,8 @@ def test_hom_ref_samples_are_absent_from_the_entry_stream(vds_lgt):
     per_sample = dict(zip(visited["s"], visited["n"], strict=True))
 
     assert per_sample["S1"] == 0, "hom-ref sample must not be visited at all"
-    assert per_sample["S2"] == 6  # a call at every one of the six sites
-    assert per_sample["S3"] == 6
+    assert per_sample["S2"] == 7  # a call at every one of the seven sites
+    assert per_sample["S3"] == 7
     assert per_sample["S4"] == 1  # the no-call entry at chr1:2000 exists
 
 
@@ -162,6 +171,109 @@ def test_normalizes_a_non_minimal_representation(vds_lgt):
     assert prs["S2"] == 1.0  # carries one copy of the SNP allele
     assert prs["S3"] == 2.0  # homozygous for it
     assert prs["S4"] == 0.0  # hom-ref
+
+
+def test_ref_effect_at_a_multiallelic_site(vds_lgt):
+    """CORRECT, and the reason `n_non_ref` exists. This was Finding 6.
+
+    `hl.vds.split_multi` **downcodes**: at the `[C, T]` row of the `C / G,T`
+    site, a sample carrying the G has its G rewritten to the reference. Its `GT`
+    becomes `0/0` and `GT.n_alt_alleles()` is 0 -- byte-for-byte identical to a
+    genuine homozygous-reference sample.
+
+    For an ALT-effect weight that is exactly right: S2 really does carry zero
+    copies of T. But for a **REF-effect** weight it is a disaster. The row-level
+    offset hands every sample `2w`, and the entry term subtracts `w * dosage`
+    back off. If `dosage` is the downcoded count, S2 subtracts nothing and is
+    scored as carrying **two** copies of C -- when it carries one.
+
+    The fix is `n_non_ref`: the sample's total non-reference allele count, read
+    off its **pre-split** local genotype and carried through the split by
+    `_split_multi_with_total_dosage`. Copies of the reference are
+    `2 - n_non_ref`, and that identity only holds when *every* non-reference
+    allele is counted.
+
+    chr1:5000 is C / G,T. Effect allele C (the REF), paired with T.
+    True copies of C: S1 2 (hom-ref), S2 1 (C/G), S3 1 (C/T), S4 2 (hom-ref).
+    """
+    raw = hl.Table.parallelize(
+        [{"chr": "chr1", "pos": 5000, "effect_allele": "C",
+          "noneffect_allele": "T", "weight": 1.0}],
+        hl.tstruct(
+            chr=hl.tstr, pos=hl.tint32, effect_allele=hl.tstr,
+            noneffect_allele=hl.tstr, weight=hl.tfloat64,
+        ),
+    )  # fmt: skip
+    prs, n_matched = score(vds_lgt, raw)
+
+    assert n_matched == 1
+    assert prs["S1"] == 2.0  # C/C, no entry: the offset is the whole score
+    assert prs["S2"] == 1.0, (
+        "S2 is C/G. It carries ONE C. Its G downcodes to REF at the [C,T] row, "
+        "so a dosage read from the downcoded GT would score it 2.0."
+    )
+    assert prs["S3"] == 1.0  # C/T
+    assert prs["S4"] == 2.0  # C/C, no entry
+
+
+def test_ref_effect_when_a_sample_is_homozygous_for_another_alt(vds_lgt):
+    """CORRECT. The same bug as above, at its worst.
+
+    chr1:7000 is A / C,G and S2 is **C/C** -- homozygous for an ALT the weights
+    row never names. At the split `[A, G]` row its genotype downcodes to `0/0`,
+    so a downcoded dosage would credit it the full `2w`: two copies of A, an
+    allele it does not carry at all. The error is a whole `2w`, the largest a
+    single variant can produce.
+
+    Effect allele A (the REF), paired with G.
+    True copies of A: S1 2 (hom-ref), S2 0 (C/C), S3 1 (A/G), S4 2 (hom-ref).
+    """
+    raw = hl.Table.parallelize(
+        [{"chr": "chr1", "pos": 7000, "effect_allele": "A",
+          "noneffect_allele": "G", "weight": 1.0}],
+        hl.tstruct(
+            chr=hl.tstr, pos=hl.tint32, effect_allele=hl.tstr,
+            noneffect_allele=hl.tstr, weight=hl.tfloat64,
+        ),
+    )  # fmt: skip
+    prs, n_matched = score(vds_lgt, raw)
+
+    assert n_matched == 1
+    assert prs["S1"] == 2.0  # A/A, no entry
+    assert prs["S2"] == 0.0, (
+        "S2 is C/C and carries NO copy of A. A dosage read from the downcoded "
+        "GT would score it 2.0 -- the maximum possible error for one variant."
+    )
+    assert prs["S3"] == 1.0  # A/G
+    assert prs["S4"] == 2.0  # A/A, no entry
+
+
+def test_alt_effect_is_unaffected_by_another_alt(vds_lgt):
+    """CORRECT, and the other half of the argument.
+
+    Downcoding is only wrong for REF-effect rows. When the effect allele is an
+    ALT, a sample carrying a *different* ALT genuinely carries zero copies of
+    the effect allele, and the downcoded `GT.n_alt_alleles()` says exactly that.
+
+    So the two orientations must count *different* dosages, which is why
+    `_entry_contribution` branches on `ref_is_effect` rather than using one
+    dosage everywhere. Counting `n_non_ref` here instead would score S2 -- a
+    C/G carrier -- as holding one copy of T.
+
+    chr1:5000 is C / G,T. Effect allele T (an ALT).
+    True copies of T: S1 0, S2 0 (C/G), S3 1 (C/T), S4 0.
+    """
+    raw = hl.Table.parallelize(
+        [{"chr": "chr1", "pos": 5000, "effect_allele": "T",
+          "noneffect_allele": "C", "weight": 1.0}],
+        hl.tstruct(
+            chr=hl.tstr, pos=hl.tint32, effect_allele=hl.tstr,
+            noneffect_allele=hl.tstr, weight=hl.tfloat64,
+        ),
+    )  # fmt: skip
+    prs, _ = score(vds_lgt, raw)
+
+    assert prs == {"S1": 0.0, "S2": 0.0, "S3": 1.0, "S4": 0.0}
 
 
 def test_a_locus_shifting_variant_raises_rather_than_vanishing(
