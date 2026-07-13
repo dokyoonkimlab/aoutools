@@ -39,6 +39,28 @@ MOUNTS_NO_FUSE = (
     "/dev/sda1 / ext4 rw,relatime 0 0\n"
 )
 
+# The layout that broke it. A cloned tutorial workspace mounts the notebooks
+# bucket it was cloned from ALONGSIDE the workspace's own bucket -- and the
+# kernel happened to list the cloned one first. Taking the first gcsfuse entry
+# selected `cloned-aou-tutorial-notebooks-...` and staged a user's files into
+# the wrong bucket without a word.
+MOUNTS_MULTI = (
+    "proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n"
+    "cloned-aou-tutorial-notebooks-wb-swift-orange-3552 "
+    "/home/dataproc/workspace/cloned-aou-tutorial-notebooks fuse.gcsfuse "
+    "rw,nosuid,nodev,relatime 0 0\n"
+    "workspace-bucket-wb-swift-orange-3552 "
+    "/home/dataproc/workspace/workspace-bucket fuse.gcsfuse "
+    "rw,nosuid,nodev,relatime 0 0\n"
+)
+
+# Several buckets mounted, none of them at the workspace-bucket mountpoint.
+MOUNTS_AMBIGUOUS = (
+    "proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n"
+    "bucket-one /home/dataproc/workspace/one fuse.gcsfuse rw 0 0\n"
+    "bucket-two /home/dataproc/workspace/two fuse.gcsfuse rw 0 0\n"
+)
+
 
 class TestGetWorkspaceBucket:
     """Resolution: explicit argument, then env var, then the gcsfuse mount."""
@@ -73,6 +95,57 @@ class TestGetWorkspaceBucket:
                 bucket = get_workspace_bucket()
 
         assert bucket == "gs://workspace-bucket-wb-swift-orange-3552"
+
+    def test_picks_the_workspace_bucket_not_whichever_is_mounted_first(
+        self, monkeypatch
+    ):
+        """The regression. A cloned tutorial workspace has TWO buckets mounted.
+
+        Taking the first gcsfuse entry in the table selected the cloned
+        tutorial's notebooks bucket and quietly staged the user's weights file
+        into it. The workspace bucket is identified by its *mountpoint*
+        (`.../workspace-bucket`), not by its position in the mount table.
+        """
+        monkeypatch.delenv("WORKSPACE_BUCKET", raising=False)
+
+        with patch("builtins.open", mock_open(read_data=MOUNTS_MULTI)):
+            with pytest.warns(UserWarning):
+                bucket = get_workspace_bucket()
+
+        assert bucket == "gs://workspace-bucket-wb-swift-orange-3552"
+        assert "cloned" not in bucket, (
+            "the cloned tutorial's notebooks bucket is not the workspace bucket"
+        )
+
+    def test_refuses_to_guess_between_several_buckets(self, monkeypatch):
+        """When nothing identifies the workspace bucket, do not pick one.
+
+        Output written to the wrong bucket fails silently -- there is no error,
+        the results simply are not where the user thinks they are. An error
+        naming the candidates is strictly better than a coin flip.
+        """
+        monkeypatch.delenv("WORKSPACE_BUCKET", raising=False)
+
+        with patch("builtins.open", mock_open(read_data=MOUNTS_AMBIGUOUS)):
+            with pytest.raises(OSError) as excinfo:
+                get_workspace_bucket()
+
+        message = str(excinfo.value)
+        assert "bucket-one" in message and "bucket-two" in message, (
+            "the error must name the candidates it found"
+        )
+        assert "will not guess" in message
+
+    def test_a_single_mounted_bucket_is_not_a_guess(self, monkeypatch):
+        """One bucket, non-standard mountpoint: unambiguous, so use it."""
+        monkeypatch.delenv("WORKSPACE_BUCKET", raising=False)
+        mounts = (
+            "only-bucket /home/dataproc/somewhere-else fuse.gcsfuse rw 0 0\n"
+        )
+
+        with patch("builtins.open", mock_open(read_data=mounts)):
+            with pytest.warns(UserWarning):
+                assert get_workspace_bucket() == "gs://only-bucket"
 
     def test_raises_with_instructions_when_nothing_works(self, monkeypatch):
         """The error has to say how to fix it, because the obvious fix (export

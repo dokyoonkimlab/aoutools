@@ -37,6 +37,12 @@ logger = logging.getLogger(__name__)
 _MOUNTS_FILE = "/proc/mounts"
 _GCSFUSE_TYPES = ("fuse.gcsfuse", "gcsfuse")
 
+# The workspace bucket is fuse-mounted at `~/workspace/workspace-bucket`. Other
+# buckets can be mounted alongside it -- a cloned tutorial workspace brings the
+# notebooks bucket it was cloned from -- so the mountpoint, not the order of the
+# mount table, is what identifies the right one.
+_WORKSPACE_MOUNT_NAME = "workspace-bucket"
+
 # The path to the current All of Us short-read WGS VariantDataset.
 #
 # This is a *fallback*, and deliberately the last resort in `get_vds_path`. The
@@ -58,31 +64,64 @@ DEFAULT_VDS_PATH = (
 )
 
 
-def _bucket_from_gcsfuse_mount() -> str | None:
+def _gcsfuse_mounts() -> list[tuple[str, str]]:
     """
-    Recovers the workspace bucket name from a gcsfuse mount, or None.
+    Every gcsfuse mount, as a list of `(bucket_name, mountpoint)`.
 
-    The Workbench fuse-mounts the workspace bucket (typically at
-    `~/workspace/workspace-bucket`). In `/proc/mounts` the *device* field of a
-    gcsfuse entry is the bucket name, so the bucket can be recovered from the
-    mount table even when `$WORKSPACE_BUCKET` is not set.
-
-    Best-effort: returns None on any platform without `/proc/mounts` (macOS,
-    Windows), or if no gcsfuse mount is present.
+    In `/proc/mounts` the *device* field of a gcsfuse entry is the bucket name.
+    Returns an empty list on any platform without `/proc/mounts` (macOS,
+    Windows), or if nothing is fuse-mounted.
     """
     try:
         with open(_MOUNTS_FILE) as fh:
             lines = fh.readlines()
     except OSError:
-        return None
+        return []
 
+    mounts = []
     for line in lines:
         fields = line.split()
         if len(fields) < 3:
             continue
-        device, _mountpoint, fstype = fields[0], fields[1], fields[2]
+        device, mountpoint, fstype = fields[0], fields[1], fields[2]
         if fstype in _GCSFUSE_TYPES and device:
-            return device
+            mounts.append((device, mountpoint))
+    return mounts
+
+
+def _bucket_from_gcsfuse_mount() -> str | None:
+    """
+    Recovers the workspace bucket from the gcsfuse mount table, or None.
+
+    **A workspace can have more than one bucket fuse-mounted.** A cloned
+    tutorial workspace, for instance, mounts the notebooks bucket it was cloned
+    from alongside the workspace's own bucket. So this cannot simply take the
+    first gcsfuse entry it finds: doing that once selected
+    `cloned-aou-tutorial-notebooks-...` in place of `workspace-bucket-...`, and
+    staged a user's files into the wrong bucket without a word.
+
+    The workspace bucket is the one mounted at `.../workspace-bucket`, so it is
+    identified by its **mountpoint**, not by position in the table.
+
+    Returns None if the answer is not unambiguous -- if no gcsfuse mount matches
+    the expected mountpoint and there is more than one candidate, the caller
+    raises rather than picking one. Writing analysis output to the wrong bucket
+    is a silent error, and a guess is not worth making.
+    """
+    mounts = _gcsfuse_mounts()
+    if not mounts:
+        return None
+
+    # The workspace bucket lives at `~/workspace/workspace-bucket`.
+    for bucket, mountpoint in mounts:
+        if os.path.basename(mountpoint.rstrip("/")) == _WORKSPACE_MOUNT_NAME:
+            return bucket
+
+    # No mountpoint says which one it is. If there is exactly one bucket
+    # mounted, it is not a guess. Otherwise, refuse.
+    if len(mounts) == 1:
+        return mounts[0][0]
+
     return None
 
 
@@ -152,6 +191,27 @@ def get_workspace_bucket(bucket: str | None = None) -> str:
                 UserWarning,
                 stacklevel=2,
             )
+        else:
+            # Several buckets are mounted and none of them sits at the
+            # workspace-bucket mountpoint. Do NOT pick one: output written to
+            # the wrong bucket is a silent error, and the candidates here are
+            # things like a cloned tutorial's notebooks bucket, which a user
+            # would never intend to write results into.
+            candidates = _gcsfuse_mounts()
+            if len(candidates) > 1:
+                listed = "\n".join(
+                    f"  gs://{b}   (mounted at {m})" for b, m in candidates
+                )
+                raise OSError(
+                    "Several buckets are fuse-mounted and none of them is at "
+                    "the expected workspace-bucket mountpoint, so aoutools "
+                    "cannot tell which one is yours:\n\n"
+                    f"{listed}\n\n"
+                    "It will not guess: writing results into the wrong bucket "
+                    "would fail silently. Say which one, in a notebook cell:\n"
+                    "  import os\n"
+                    '  os.environ["WORKSPACE_BUCKET"] = "gs://your-bucket"'
+                )
 
     if not bucket:
         raise OSError(
