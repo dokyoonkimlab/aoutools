@@ -160,6 +160,20 @@ def _ensure_pgscatalog_download(min_version: str = "1.0.1") -> Path:
                 ]
             )
 
+        # Verify the CLI is actually there before caching it. Neither the venv
+        # creation nor the pip install is checked otherwise, so a partial or
+        # failed install would be cached as success and surface later as an
+        # inscrutable error from a command that does not exist -- or worse, from
+        # a stale one left behind by an earlier attempt.
+        if not cli_path.exists():
+            raise RuntimeError(
+                f"pgscatalog.core was installed into {PGS_ENV_DIR}, but the "
+                f"'pgscatalog-download' command is not there. The environment "
+                f"is likely half-built from an interrupted install.\n\n"
+                f"Delete it and let aoutools rebuild it:\n"
+                f"  import shutil; shutil.rmtree('{PGS_ENV_DIR}')"
+            )
+
         _cached_cli_path = cli_path
         return cli_path
 
