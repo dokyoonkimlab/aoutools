@@ -168,10 +168,36 @@ def _process_prs_weights_table(
             n_removed,
         )
 
+    # Drop variants with no chromosome or position. They cannot be scored --
+    # there is no locus to join them to the VDS on -- so this is the same kind
+    # of unusable row as a missing weight, and is dropped the same way.
+    #
+    # This must happen BEFORE the duplicate check. PGS Catalog harmonized files
+    # routinely contain a handful of variants that failed to map (20 of 375,822
+    # in PGS000747), and every one of them has a null chr AND a null pos -- so
+    # they all collapse onto the same variant_id (`null_null_A_G`) and look like
+    # duplicates. Checking first turned a few unmappable rows into a hard error
+    # that rejected the entire scoring file.
+    count_before_locus_filter = table.count()
+    table = table.filter(
+        hl.is_defined(table.chr) & hl.is_defined(table.pos)
+    ).persist()
+    unmapped_row_count = count_before_locus_filter - table.count()
+    if unmapped_row_count > 0:
+        logger.warning(
+            "Removed %d variant(s) from '%s' with no chromosome or position. "
+            "These are typically variants that failed harmonization; they "
+            "cannot be matched to the VDS and do not contribute to any score.",
+            unmapped_row_count,
+            file_path,
+        )
+
+    filtered_row_count = table.count()
     if filtered_row_count == 0:
         raise ValueError(
             f"Input file '{file_path}' is empty or all variants were "
-            f"filtered out due to missing/zero weights or invalid alleles."
+            f"filtered out due to missing/zero weights, missing genomic "
+            f"coordinates, or invalid alleles."
         )
 
     _check_duplicated_ids(table, file_path=file_path)
