@@ -34,7 +34,15 @@ PGS_ENV_DIR = Path(os.environ.get("AOUTOOLS_PGS_ENV_DIR", DEFAULT_ENV_DIR))
 
 
 def _run(cmd: list[str], **kwargs) -> None:
-    """Run a shell command and raise an error if it fails, logging output."""
+    """
+    Run a shell command, raising with the subprocess's own error text.
+
+    The failure text is put into the **exception message**, not only into the
+    log. `aoutools` installs a `NullHandler`, and a notebook configures no
+    logging by default, so anything logged here is discarded -- which used to
+    leave a caller with a bare `CalledProcessError` and no way at all to see
+    why the download failed.
+    """
     try:
         completed = subprocess.run(
             cmd, check=True, capture_output=True, text=True, **kwargs
@@ -44,7 +52,18 @@ def _run(cmd: list[str], **kwargs) -> None:
         logger.error("Command '%s' failed with exit code %d", cmd, e.returncode)
         logger.error("stdout:\n%s", e.stdout)
         logger.error("stderr:\n%s", e.stderr)
-        raise
+
+        details = "\n".join(
+            part
+            for part in (
+                f"Command failed with exit code {e.returncode}:",
+                f"  {' '.join(str(c) for c in cmd)}",
+                f"\nstderr:\n{e.stderr.strip()}" if e.stderr else "",
+                f"\nstdout:\n{e.stdout.strip()}" if e.stdout else "",
+            )
+            if part
+        )
+        raise RuntimeError(details) from e
 
 
 def _create_env() -> Path:
