@@ -198,7 +198,26 @@ def _run_pgscatalog_download(
     cli_path = _ensure_pgscatalog_download(min_version=min_version)
     outdir_path = str(outdir)
     cmd = [str(cli_path), "-o", outdir_path, *args]
-    _run(cmd)
+
+    try:
+        _run(cmd)
+    except RuntimeError as e:
+        # Without `-w`, pgscatalog-download raises FileExistsError on the first
+        # file that is already present -- and because the downloads run
+        # concurrently, that kills the WHOLE batch, including the scores that
+        # would have downloaded fine. Re-running a notebook cell is the normal
+        # way to hit this, and the raw traceback (deep inside tenacity and a
+        # thread pool) says nothing about how to fix it.
+        if "already exists" not in str(e):
+            raise
+        raise FileExistsError(
+            f"A scoring file already exists in {outdir_path}, and "
+            "`pgscatalog-download` refuses to overwrite it -- which aborts "
+            "the entire batch, not just that one score.\n\n"
+            "Either pass `overwrite_existing_file=True` to re-download it, or "
+            "delete the directory and start clean.\n\n"
+            f"Original error:\n{e}"
+        ) from e
 
 
 def _normalize_arg(arg: Iterable[str] | str | None) -> list[str]:
@@ -242,7 +261,13 @@ def download_pgs(
     efo_include_children : bool, default True
         Whether to include descendant EFO terms.
     overwrite_existing_file : bool, default False
-        Overwrite existing files if newer versions exist.
+        Re-download a scoring file that is already present in `outdir`.
+
+        When False (the default), a file that already exists is an **error**,
+        and because the downloads run concurrently it aborts the whole batch --
+        not just the score whose file was present. Re-running a cell that
+        downloaded successfully once will therefore fail. Pass True to make the
+        call idempotent.
     user_agent : str, optional
         Custom user agent string.
     verbose : bool, default False

@@ -17,7 +17,11 @@ from pathlib import Path
 import pytest
 
 from aoutools.prs import _downloader
-from aoutools.prs._downloader import _ensure_pgscatalog_download, _run
+from aoutools.prs._downloader import (
+    _ensure_pgscatalog_download,
+    _run,
+    _run_pgscatalog_download,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -74,6 +78,61 @@ class TestRun:
         )
 
         assert _run(["x"]) is None
+
+
+class TestRunPgscatalogDownload:
+    def test_an_existing_file_gets_an_actionable_error(self, mocker, tmp_path):
+        """A pre-existing scoring file must not surface as a raw traceback.
+
+        Without `-w`, pgscatalog-download raises FileExistsError on the first
+        file already present -- and the downloads are concurrent, so that takes
+        down the *whole batch*, including scores that would have worked.
+        Re-running a notebook cell is the ordinary way to hit this, and the
+        underlying error arrives buried inside tenacity and a thread pool with
+        no hint of the fix.
+        """
+        mocker.patch.object(
+            _downloader,
+            "_ensure_pgscatalog_download",
+            return_value=tmp_path / "pgscatalog-download",
+        )
+        mocker.patch.object(
+            _downloader,
+            "_run",
+            side_effect=RuntimeError(
+                "Command failed with exit code 1:\n"
+                "FileExistsError: /out/PGS000747_hmPOS_GRCh38.txt.gz "
+                "already exists"
+            ),
+        )
+
+        with pytest.raises(FileExistsError) as excinfo:
+            _run_pgscatalog_download("/out", "-i", "PGS000746", "PGS000747")
+
+        message = str(excinfo.value)
+        assert "overwrite_existing_file=True" in message, (
+            "the error must name the flag that fixes it"
+        )
+        assert "entire batch" in message
+
+    def test_other_failures_are_not_disguised_as_file_conflicts(
+        self, mocker, tmp_path
+    ):
+        """Only the already-exists case gets rewritten. A network failure must
+        still arrive as itself."""
+        mocker.patch.object(
+            _downloader,
+            "_ensure_pgscatalog_download",
+            return_value=tmp_path / "pgscatalog-download",
+        )
+        mocker.patch.object(
+            _downloader,
+            "_run",
+            side_effect=RuntimeError("Connection reset by peer"),
+        )
+
+        with pytest.raises(RuntimeError, match="Connection reset"):
+            _run_pgscatalog_download("/out", "-i", "PGS000746")
 
 
 class TestEnsurePgscatalogDownload:
