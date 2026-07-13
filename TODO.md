@@ -16,6 +16,10 @@ went with it), allele orientation is resolved per row (Finding 4), and Finding 5
 turned out **not to occur in All of Us at all** -- measured, not assumed -- so
 Task 3 was cancelled rather than built.
 
+**Finding 6 (fixed).** Found while writing the *oracle* for
+`notebooks/validate_scoring_on_aou.ipynb`: at a multi-allelic site, a REF-effect
+weight scored a carrier of a *different* ALT as homozygous reference. See below.
+
 ---
 
 ## The root cause: a hom-ref sample is not a missing entry
@@ -140,17 +144,72 @@ Two guards were added instead:
 
 ---
 
+## ~~Finding 6~~ — splitting downcodes, and the REF-effect dosage believed it
+
+**Fixed.** This one was live in `dev` after Task 2 and would have shipped.
+
+`hl.vds.split_multi` emits one bi-allelic row per ALT and **downcodes** the
+genotype. At the `[C, T]` row of a `C / G,T` site, a sample carrying the G has
+its G rewritten to the reference: its `GT` is `0/0` and `GT.n_alt_alleles()` is
+`0` — byte-for-byte identical to a genuine homozygous-reference sample.
+
+For an **ALT**-effect weight that is exactly right (the sample really does carry
+zero copies of T). For a **REF**-effect weight it is not, because the offset
+arithmetic
+
+```
+w · (2 − n_alt)  ==  2w − w · n_alt
+```
+
+is only valid when `n_alt` counts **every** non-reference allele. After
+downcoding it counts one. Measured on the mock VDS with real hail, effect allele
+`C` (the REF) at `chr1:5000` (`C / G,T`):
+
+| sample | genotype | true copies of C | scored (before) |
+|---|---|---|---|
+| S1 | C/C (no entry) | 2 | 2.0 ✅ |
+| S2 | **C/G** | **1** | **2.0** ❌ |
+| S3 | C/T | 1 | 1.0 ✅ |
+| S4 | C/C (no entry) | 2 | 2.0 ✅ |
+
+Worst case is a full `2w`: a sample **homozygous** for the unnamed ALT (`C/C` at
+an `A / C,G` site) carries **no** copy of the REF and was credited with two.
+
+**Why it mattered.** 21% of AoU rows are multi-allelic, and the PGS Catalog does
+not harmonize the effect allele onto the ALT, so REF-effect rows are the normal
+case — not a corner. Every existing test passed, because at a bi-allelic site
+`n_alt` and "total non-ref" are the same number.
+
+**The fix.** Extra entry fields survive `split_multi`, so
+`_split_multi_with_total_dosage` annotates each entry with `n_non_ref` — the
+total non-reference count from its **pre-split** local genotype — before
+splitting. `_entry_contribution` counts `n_non_ref` for REF-effect rows and the
+downcoded `GT.n_alt_alleles()` for ALT-effect rows. The two branches are *both*
+load-bearing; mutating either turns a distinct set of integration tests red and
+nothing else.
+
+Pinned by `test_ref_effect_at_a_multiallelic_site`,
+`test_ref_effect_when_a_sample_is_homozygous_for_another_alt`, and
+`test_alt_effect_is_unaffected_by_another_alt`.
+
+---
+
 ## How scoring behaves today
 
 One path, no allele-handling config at all. `hl.vds.split_multi` splits
 multi-allelic sites, the weights are joined on `(locus, **sorted** allele pair)` —
-so the join key *is* the allele check, and it matches either orientation — and
-dosage is `GT.n_alt_alleles()`.
+so the join key *is* the allele check, and it matches either orientation.
+
+**Two different dosages**, because splitting downcodes (Finding 6):
+`GT.n_alt_alleles()` counts copies of *this row's* ALT; `n_non_ref` counts *all*
+non-reference alleles the sample carries at the site, read off the pre-split
+genotype.
 
 | weights row | behavior |
 |---|---|
 | effect allele on the **ALT** | correct: `+w·n_alt`, offset 0; hom-ref contributes nothing, as it should |
-| effect allele on the **REF** | correct: `−w·n_alt` per entry **plus a row-level `2w`** applied to every sample |
+| effect allele on the **REF** | correct: `−w·n_non_ref` per entry **plus a row-level `2w`** applied to every sample |
+| REF-effect at a multi-allelic site | correct: a carrier of another ALT scores `2 − n_non_ref`, not `2` (Finding 6) |
 | variant not in the VDS | dropped for everyone, **and contributes no offset** |
 | no-call entry | contributes nothing; the offset is cancelled by `_entry_contribution` |
 | non-minimal representation (suffix trim) | correct: normalized to the variant the GWAS names |
@@ -244,10 +303,34 @@ could break — which is the other reason the raising default stays armed.
 
 ---
 
+## Workbench validation notebooks (done)
+
+Two notebooks close the holes the offline tiers cannot reach. **CI does not run
+them** — a human runs them on the Workbench before a release.
+
+- `notebooks/validate_scoring_on_aou.ipynb` — the real-data counterpart of
+  `tests/integration/`. Finds a **real variant of each fixture's shape** in the
+  real VDS and checks the library against copy numbers counted from
+  `hl.vds.to_dense_mt` — an oracle that never calls `min_rep`, `split_multi`, or
+  `aoutools`. Writing that oracle is what found **Finding 6**.
+- `notebooks/validate_public_api_on_aou.ipynb` — `calculate_prs`,
+  `calculate_prs_batch`, and `calculate_pgs` all hard-raise without a `gs://`
+  output path, so no offline test reaches them, nor the PGS download, nor
+  `_stage_local_file_to_gcs`. This is the only check on any of it.
+
+`aoutools.init_hail()` / `get_vds_path()` (`_workbench.py`) hold the Workbench
+boilerplate: requester-pays billing, the reference genome set *after* `hl.init`
+(passing `default_reference` to it is deprecated), and a warned fallback for
+`$WGS_VDS_PATH`, which current images no longer export. **`DEFAULT_VDS_PATH`
+names a specific AoU data release and must be bumped when a new one lands.**
+
+---
+
 ## Other open items
 
-- **Release note (Tasks 1 + 2 together — one note, not two).** Every previously
-  computed score changes, and users need to know *which kind* of change hit them:
+- **Release note (Tasks 1 + 2 + Finding 6 — one note, not three).** Every
+  previously computed score changes, and users need to know *which kind* of change
+  hit them:
   - `split_multi=False` **with REF-effect weights**: the **rankings themselves were
     wrong** (hom-ref samples zeroed, per-sample error). Anything downstream needs
     redoing.
@@ -256,10 +339,14 @@ could break — which is the other reason the raising default stays armed.
   - **Everyone else, including default config**: REF-effect weights rows were
     silently *dropped* and now contribute. Scores move; the old ones were computed
     from a subset of the variants.
+  - **Finding 6 — anyone with REF-effect weights at a multi-allelic site**: samples
+    carrying a *different* ALT were over-credited by up to `2w` **each**. Per-sample
+    and genotype-dependent, so this **reordered the cohort** too. It shipped in no
+    release, but it was live on `dev` after Task 2.
 
-  That first bullet is the difference between "your numbers moved" and "your result
-  was wrong". Say it plainly, do not soften it. Three config knobs are removed, so
-  this is a breaking change — bump accordingly.
+  The "rankings were wrong" bullets are the difference between *your numbers moved*
+  and *your result was wrong*. Say it plainly, do not soften it. Three config knobs
+  are removed, so this is a breaking change — bump accordingly.
 - **`main` is behind `dev`.** All current work is on `dev`. Clean fast-forward
   whenever wanted.
 - **No strand harmonization exists anywhere.** Weights are assumed to be on the same

@@ -8,3 +8,4 @@ including all its modules, functions, and classes.
    :maxdepth: 1
 
    prs
+   workbench

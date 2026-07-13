@@ -57,6 +57,39 @@ it, and it pins numpy/pandas tightly.
 Any change to scoring logic should land with an integration test. The mocked tier
 will not catch you.
 
+## The third tier: `notebooks/`, run on the Workbench
+
+Both offline tiers have a hole only the real Workbench can fill, so two notebooks
+are checked in. **They are not run by CI** — a human runs them on a Hail Genomic
+Analysis environment before a release.
+
+- `validate_scoring_on_aou.ipynb` — the real-data counterpart of
+  `tests/integration/`. Every fixture in `tests/integration/conftest.py` is a
+  *claim about the shape of the real VDS*; if a claim is false the mock suite
+  stays green and the scores are wrong anyway. So this notebook **finds a real
+  variant of each shape** in the real VDS and checks the library against copy
+  numbers counted from `hl.vds.to_dense_mt` — an oracle that never calls
+  `min_rep`, `split_multi`, or `aoutools`. That independence is not ceremony:
+  writing it is what turned up **Finding 6**.
+- `validate_public_api_on_aou.ipynb` — `calculate_prs`, `calculate_prs_batch`,
+  and `calculate_pgs` all hard-raise unless `output_path` starts with `gs://`, so
+  **no offline test reaches any of them**. Nor the PGS Catalog download, nor
+  `_stage_local_file_to_gcs`. This notebook is the only check on all of it.
+
+`aoutools.init_hail()` and `aoutools.get_vds_path()` (`_workbench.py`) exist so
+the Workbench boilerplate lives in one place: requester-pays billing from
+`$GOOGLE_PROJECT`, the reference genome set *after* `hl.init` (passing
+`default_reference` to it is deprecated), and a fallback for `$WGS_VDS_PATH`,
+which current Workbench images no longer export. The fallback names a specific
+All of Us data release and **warns**; bump `DEFAULT_VDS_PATH` when AoU cuts a new
+one. It is deliberately not auto-discovered — picking "the newest version in the
+bucket" could hand back genomic data that does not match the CDR the workspace is
+registered against, which is a wrong analysis rather than an error.
+
+The two older notebooks are evidence, not runnable code:
+`verify_hom_ref_dosage.ipynb` (why the non-split path was removed) and
+`measure_minrep_locus_shift.ipynb` (why Finding 5 was closed).
+
 ## Lint & formatting
 
 **ruff** is both linter and formatter; config is `[tool.ruff]` in
@@ -88,20 +121,29 @@ Public API is re-exported from internal `_`-prefixed modules via
 weights table is chunked into `chunk_size` variants; each chunk builds 1bp
 intervals for `hl.vds.filter_intervals` so only relevant loci are read, computes
 its PRS, and results are summed across chunks. There is **one** scoring path:
-`hl.vds.split_multi` splits multi-allelic sites, the weights are joined on
+`hl.vds.split_multi` splits multi-allelic sites, and the weights are joined on
 (locus, **sorted** allele pair) — so the join key *is* the allele check, and it
-matches either orientation — and dosage is `GT.n_alt_alleles()`. Shared helpers
-live in `_calculator_utils.py`.
+matches either orientation. Shared helpers live in `_calculator_utils.py`.
 
 **The hom-ref offset.** Orientation is resolved per row against the VDS's REF.
-When the effect allele is the REF, the true contribution is `w·(2 − n_alt)`,
-which splits into a per-entry `−w·n_alt` and a row-level `2w`. The entry term is
-already right for hom-ref samples (`n_alt` is 0); the `2w` is added as a
+When the effect allele is the REF, the true contribution is `w·(2 − n_non_ref)`,
+which splits into a per-entry `−w·n_non_ref` and a row-level `2w`. The entry term
+is already right for hom-ref samples (`n_non_ref` is 0); the `2w` is added as a
 **row-level constant**, because a hom-ref sample has no entry and no entry
 aggregator can reach it. Three invariants hold it up, all of them silent if
 broken: the offset is only summed over rows that *matched* a variant, it is
 cancelled for no-call entries (`_entry_contribution`), and it never varies per
 sample. `tests/integration/` asserts each.
+
+**Two dosages, because splitting downcodes.** `split_multi` rewrites every *other*
+ALT to the reference, so at the `[C,T]` row of a `C/G,T` site a C/G carrier has
+`GT == 0/0` — indistinguishable from a hom-ref sample. That is correct for an
+ALT-effect weight (it carries no T) and **wrong** for a REF-effect one (it carries
+one C, not two). So `_split_multi_with_total_dosage` annotates each entry with
+`n_non_ref` — the total non-ref count from the **pre-split** local genotype, which
+survives the split — and `_entry_contribution` counts `n_non_ref` for REF-effect
+rows and `GT.n_alt_alleles()` for ALT-effect rows. Both branches are load-bearing;
+using either one everywhere turns integration tests red. This was Finding 6.
 
 Two knobs were removed for silently losing data: `split_multi=False` selected a
 path that zeroed every hom-ref sample at a REF-effect variant (reordering the
