@@ -11,7 +11,16 @@ notebook would otherwise get wrong in its own way:
 * `WORKSPACE_BUCKET` is no longer exported *either*, and it cannot simply be
   exported by the user: a variable set in a Jupyter terminal never reaches the
   kernel, because the two are sibling children of the Jupyter server. So the
-  bucket is recovered from the gcsfuse mount table instead.
+  bucket is resolved from the Workbench CLI, which is authoritative, falling
+  back to the gcsfuse mount table.
+* The billing project moved from `GOOGLE_PROJECT` to `GOOGLE_CLOUD_PROJECT`.
+
+The two bucket tests that matter both pin *wrong* answers that were previously
+returned: the cloned tutorial workspace's notebooks bucket (which the mount
+table listed first), and the temporary workspace bucket (whose resource id
+contains "workspace-bucket" as a substring, and whose contents are
+garbage-collected). Neither failure raises anything -- the results just end up
+somewhere the user never looks.
 """
 
 import warnings
@@ -19,12 +28,25 @@ from unittest.mock import mock_open, patch
 
 import pytest
 
+from aoutools import _workbench
 from aoutools._workbench import (
     DEFAULT_VDS_PATH,
+    _bucket_from_wb_cli,
+    get_google_project,
     get_vds_path,
     get_workspace_bucket,
     init_hail,
 )
+
+
+@pytest.fixture(autouse=True)
+def no_wb_cli(mocker):
+    """Never shell out to the real `wb` CLI from a unit test.
+
+    Tests that exercise the CLI path override this with their own return value.
+    """
+    return mocker.patch.object(_workbench, "_wb_json", return_value=None)
+
 
 # A realistic /proc/mounts, with the workspace bucket fuse-mounted.
 MOUNTS = (
@@ -62,8 +84,110 @@ MOUNTS_AMBIGUOUS = (
 )
 
 
+# What `wb resource list --format=json` returns in a cloned tutorial workspace.
+# Note the trap: "workspace-bucket" is a substring of
+# "temporary-workspace-bucket", so the temp bucket must be excluded BEFORE the
+# match, not after. Its contents are garbage-collected -- results written there
+# quietly disappear. Verily's own setup notebook only avoids this by testing
+# `temporary` first.
+WB_RESOURCES = [
+    {
+        "id": "aou-tutorial-notebooks",
+        "resourceType": "GCS_BUCKET",
+        "bucketName": "cloned-aou-tutorial-notebooks-wb-swift-orange-3552",
+    },
+    {
+        "id": "temporary-workspace-bucket",
+        "resourceType": "GCS_BUCKET",
+        "bucketName": "temp-bucket-wb-swift-orange-3552",
+    },
+    {
+        "id": "workspace-bucket",
+        "resourceType": "GCS_BUCKET",
+        "bucketName": "workspace-bucket-wb-swift-orange-3552",
+    },
+    {
+        "id": "C2024Q1R1",
+        "resourceType": "BQ_DATASET",
+        "datasetId": "C2024Q1R1",
+    },
+]
+
+
+class TestBucketFromWbCli:
+    """The Workbench CLI is authoritative: it reports declared resources."""
+
+    def test_selects_the_workspace_bucket_not_the_temp_or_cloned_one(
+        self, mocker
+    ):
+        """Three GCS buckets, only one of them right.
+
+        `aou-tutorial-notebooks` is the cloned workspace's -- the one the mount
+        table wrongly returned. `temporary-workspace-bucket` is worse: its id
+        *contains* "workspace-bucket", so a naive substring match picks it, and
+        its contents are garbage-collected.
+        """
+        mocker.patch.object(_workbench, "_wb_json", return_value=WB_RESOURCES)
+
+        assert _bucket_from_wb_cli() == "workspace-bucket-wb-swift-orange-3552"
+
+    def test_returns_none_when_the_cli_is_unavailable(self, mocker):
+        """`wb` does not exist off the Workbench. Fall through, don't raise."""
+        mocker.patch.object(_workbench, "_wb_json", return_value=None)
+
+        assert _bucket_from_wb_cli() is None
+
+    def test_the_cli_beats_the_mount_table(self, monkeypatch, mocker):
+        """The mount table is only a fallback. It is what got this wrong."""
+        monkeypatch.delenv("WORKSPACE_BUCKET", raising=False)
+        mocker.patch.object(_workbench, "_wb_json", return_value=WB_RESOURCES)
+
+        with patch("builtins.open", mock_open(read_data=MOUNTS_MULTI)):
+            bucket = get_workspace_bucket()
+
+        assert bucket == "gs://workspace-bucket-wb-swift-orange-3552"
+
+
+class TestGetGoogleProject:
+    """Two env var names, because the platforms disagree on which to set."""
+
+    def test_prefers_google_project(self, monkeypatch):
+        monkeypatch.setenv("GOOGLE_PROJECT", "old-style")
+        monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "new-style")
+
+        assert get_google_project() == "old-style"
+
+    def test_falls_back_to_google_cloud_project(self, monkeypatch, mocker):
+        """The regression. Verily's setup sets GOOGLE_CLOUD_PROJECT and leaves
+        GOOGLE_PROJECT empty. Reading only the latter meant Hail got no
+        requester-pays billing project, and every VDS read failed."""
+        monkeypatch.delenv("GOOGLE_PROJECT", raising=False)
+        monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "verily-style")
+        mocker.patch.object(_workbench, "_wb_json", return_value=None)
+
+        assert get_google_project() == "verily-style"
+
+    def test_falls_back_to_the_cli(self, monkeypatch, mocker):
+        monkeypatch.delenv("GOOGLE_PROJECT", raising=False)
+        monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
+        mocker.patch.object(
+            _workbench,
+            "_wb_json",
+            return_value={"googleProjectId": "from-cli"},
+        )
+
+        assert get_google_project() == "from-cli"
+
+    def test_returns_none_off_the_workbench(self, monkeypatch, mocker):
+        monkeypatch.delenv("GOOGLE_PROJECT", raising=False)
+        monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
+        mocker.patch.object(_workbench, "_wb_json", return_value=None)
+
+        assert get_google_project() is None
+
+
 class TestGetWorkspaceBucket:
-    """Resolution: explicit argument, then env var, then the gcsfuse mount."""
+    """Resolution: explicit argument, then env var, then CLI, then the mount."""
 
     def test_explicit_bucket_wins(self, monkeypatch):
         monkeypatch.setenv("WORKSPACE_BUCKET", "gs://from-env")

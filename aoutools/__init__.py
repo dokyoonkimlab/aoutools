@@ -17,6 +17,7 @@ __author__ = "Jaehyun Joo"
 from . import prs
 from ._workbench import (
     DEFAULT_VDS_PATH,
+    get_google_project,
     get_vds_path,
     get_workspace_bucket,
     init_hail,
@@ -26,6 +27,7 @@ from ._workbench import (
 # *'.
 __all__ = [
     "DEFAULT_VDS_PATH",
+    "get_google_project",
     "get_vds_path",
     "get_workspace_bucket",
     "init_hail",
