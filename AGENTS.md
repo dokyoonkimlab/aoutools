@@ -86,9 +86,14 @@ one. It is deliberately not auto-discovered — picking "the newest version in t
 bucket" could hand back genomic data that does not match the CDR the workspace is
 registered against, which is a wrong analysis rather than an error.
 
-The two older notebooks are evidence, not runnable code:
-`verify_hom_ref_dosage.ipynb` (why the non-split path was removed) and
-`measure_minrep_locus_shift.ipynb` (why Finding 5 was closed).
+Two older notebooks record findings rather than validate the library.
+`verify_hom_ref_dosage.ipynb` (why the non-split path was removed) is **frozen
+evidence** — its cells construct `PRSConfig(split_multi=False)` and raise
+`TypeError` today, so they keep the pre-helper `hl.init` boilerplate on
+purpose; modernizing cells that cannot run would only make them look as if they
+could. `measure_minrep_locus_shift.ipynb` (why Finding 5 was closed) **is still
+runnable**, and it is what you re-run if the locus-shift tripwire in
+`validate_scoring_on_aou.ipynb` ever fires on a new VDS release.
 
 ## Lint & formatting
 
