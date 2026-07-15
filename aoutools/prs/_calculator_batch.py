@@ -250,23 +250,26 @@ def _calculate_prs_chunk_batch(
             for score_name in weights_tables_map
         }
 
+        if config.include_n_matched:
+            # Fold each score's matched-variant count into the SAME pass as the
+            # scores. A separate `mt.aggregate_rows(...)` re-runs `split_multi`
+            # and the join over the chunk -- a full extra pass.
+            # `_localize=False` makes each count a lazy row aggregation that
+            # computes alongside the score in the single `select_cols` job
+            # below. See `_calculator.py` for the same fix on the single-score
+            # path. Unlike that path the batch MT is not row-filtered (it masks
+            # with `is_valid_*` instead), so the count must be
+            # `count_where(is_valid_{score})`, not a plain row count.
+            for score_name in weights_tables_map:
+                score_aggregators[f"n_matched_{score_name}"] = (
+                    mt.aggregate_rows(
+                        hl.agg.count_where(mt[f"is_valid_{score_name}"]),
+                        _localize=False,
+                    )
+                )
+
         # Compute and return the per-sample PRS results
         prs_table = mt.select_cols(**score_aggregators).cols().select_globals()
-
-    # Step 4 (Optional): Compute number of matched variants (n_matched_*) if
-    # requested
-    if config.include_n_matched:
-        with _log_timing(
-            "Computing shared variants count", config.detailed_timings
-        ):
-            n_matched_aggs = {
-                f"n_matched_{score_name}": hl.agg.count_where(
-                    mt[f"is_valid_{score_name}"]
-                )
-                for score_name in weights_tables_map
-            }
-            n_matched_counts = mt.aggregate_rows(hl.struct(**n_matched_aggs))
-            prs_table = prs_table.annotate(**n_matched_counts)
 
     return prs_table
 

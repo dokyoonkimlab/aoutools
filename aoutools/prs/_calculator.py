@@ -149,23 +149,27 @@ def _calculate_prs_chunk(
         hl.agg.sum(mt.hom_ref_offset), _localize=False
     )
 
-    # Chunks aggregation
-    prs_table = mt.select_cols(
-        prs=hl.agg.sum(mt.contribution) + total_offset
-    ).cols()
+    col_exprs = {"prs": hl.agg.sum(mt.contribution) + total_offset}
 
     if config.include_n_matched:
-        with _log_timing(
-            "Computing shared variants count", config.detailed_timings
-        ):
-            # Using hl.agg.count() within the `select_cols` block won't work
-            # since homozygous reference are set to missing while `agg.count`
-            # counts the number of rows for which that specific sample has a
-            # non-missing genotype calls.
-            # This is two-pass approach and thus less performant.
-            n_matched = mt.count_rows()
-            logger.info("%d variants in common in this chunk.", n_matched)
-            prs_table = prs_table.annotate(n_matched=n_matched)
+        # Count matched variants in the SAME pass as the score, not a separate
+        # `mt.count_rows()`. `mt` is the split-and-joined MatrixTable and is not
+        # persisted, so a second action re-runs `split_multi` and the join over
+        # the whole chunk -- a full extra pass that roughly doubled wall-clock.
+        # `_localize=False` keeps this a lazy row aggregation that folds into
+        # the `select_cols` job below, exactly as `total_offset` does. `mt` is
+        # already filtered to matched rows (`filter_rows` in `_prepare_mt_split`
+        # ), so a plain row count *is* the number of variants in common. It is a
+        # scalar, identical for every sample -- a genotype-aware
+        # `hl.agg.count()` over entries would instead undercount, since hom-ref
+        # samples have no entry to be counted.
+        col_exprs["n_matched"] = mt.aggregate_rows(
+            hl.agg.count(), _localize=False
+        )
+
+    # One pass: the score sum, its row-level offset, and the matched count are
+    # all computed together.
+    prs_table = mt.select_cols(**col_exprs).cols()
 
     # Rename sample ID column to user-defined name
     prs_table = prs_table.rename({"s": config.sample_id_col})

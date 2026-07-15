@@ -182,3 +182,43 @@ class TestBatchHelpers:
         assert result == "FinalTable"
         mock_build_rows.assert_called_once()
         assert mock_build_agg.call_count == 2
+
+    def test_n_matched_folds_into_the_scoring_pass(self, mocker):
+        """`include_n_matched=True` must not add a second pass over the split
+        MatrixTable, which is not persisted -- a separate `mt.aggregate_rows`
+        would re-run `split_multi` and the join for the whole chunk. The counts
+        are lazy `_localize=False` row aggregations that compute in the same
+        `select_cols` job as the scores. See the single-score twin in
+        `test_calculator.py`.
+        """
+        mocker.patch("aoutools.prs._calculator_batch.hl", MagicMock())
+        mock_split = mocker.patch(
+            "aoutools.prs._calculator_batch._split_multi_with_total_dosage",
+            return_value=MagicMock(),
+        )
+        mocker.patch(
+            "aoutools.prs._calculator_batch._build_row_annotations",
+            return_value={"anno1": MagicMock()},
+        )
+        mocker.patch(
+            "aoutools.prs._calculator_batch._build_prs_agg_expr",
+            return_value=MagicMock(),
+        )
+        mock_mt = mock_split.return_value
+        mock_mt.annotate_rows.return_value = mock_mt
+
+        _calculate_prs_chunk_batch(
+            vds=MagicMock(),
+            weights_tables_map={"score1": MagicMock(), "score2": MagicMock()},
+            prepared_weights=MagicMock(),
+            config=PRSConfig(include_n_matched=True),
+        )
+
+        # One aggregate_rows per score (the folded counts), all lazy, and only
+        # one materializing select_cols().cols() action for the whole chunk.
+        assert mock_mt.aggregate_rows.call_count == 2
+        assert all(
+            call.kwargs.get("_localize") is False
+            for call in mock_mt.aggregate_rows.call_args_list
+        )
+        mock_mt.count_rows.assert_not_called()

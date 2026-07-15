@@ -123,3 +123,38 @@ class TestChunkProcessing:
         assert mock_mt.aggregate_rows.call_args.kwargs["_localize"] is False
         # Verify that the final aggregation step was called on the mock mt
         mock_mt.select_cols().cols.assert_called_once()
+
+    def test_n_matched_is_folded_into_the_scoring_pass(self, mocker):
+        """`include_n_matched=True` must not add a second pass over the split
+        MatrixTable.
+
+        `mt` is not persisted, so a standalone `mt.count_rows()` (or a
+        separate `mt.aggregate_rows(...)`) re-runs `split_multi` and the join
+        over the whole chunk -- which roughly doubled wall-clock. The count is
+        instead a lazy `_localize=False` row aggregation that folds into the
+        same `select_cols` job as the score. This pins that: `count_rows` is
+        never called, and the extra aggregation is lazy.
+        """
+        mocker.patch("aoutools.prs._calculator.hl", MagicMock())
+        mock_mt = MagicMock()
+        mocker.patch(
+            "aoutools.prs._calculator._prepare_mt_split", return_value=mock_mt
+        )
+
+        _calculate_prs_chunk(
+            weights_table=MagicMock(),
+            vds=MagicMock(),
+            config=PRSConfig(include_n_matched=True),
+        )
+
+        # A second pass over the unpersisted MT is exactly what was removed.
+        mock_mt.count_rows.assert_not_called()
+        # Two row aggregations now: the offset and the matched count. Both must
+        # be lazy so they fold into the single select_cols job.
+        assert mock_mt.aggregate_rows.call_count == 2
+        assert all(
+            call.kwargs.get("_localize") is False
+            for call in mock_mt.aggregate_rows.call_args_list
+        )
+        # Still one materializing action, not two.
+        mock_mt.select_cols().cols.assert_called_once()
