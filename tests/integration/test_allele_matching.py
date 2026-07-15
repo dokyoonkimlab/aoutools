@@ -94,7 +94,8 @@ def test_hom_ref_samples_are_absent_from_the_entry_stream(vds_lgt):
     and what Task 2's constant-offset fix has to work around.
 
     Confirmed on the real All of Us VDS: 94 of 200 samples had zero entries
-    across a 5-variant window. See `notebooks/verify_hom_ref_dosage.ipynb`.
+    across a 5-variant window. See `notebooks/validate_scoring_on_aou.ipynb`,
+    check 1.
     """
     vd = vds_lgt.variant_data
 

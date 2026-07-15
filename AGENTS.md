@@ -1,7 +1,5 @@
 # AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
 `aoutools` is a Python library for *All of Us* Researcher Workbench analysis.
 The only submodule so far is `aoutools.prs`, which reads polygenic score weight
 files and calculates PRS directly against the All of Us Hail VDS.
@@ -42,8 +40,8 @@ read as arithmetic.
 The load-bearing fact it pins: **a hom-ref sample has no entry in `variant_data`**,
 and hail filters absent entries out of the entry stream, so aggregators never visit
 it. No missing-genotype default can reach it. Confirmed on the real All of Us VDS
-(`notebooks/verify_hom_ref_dosage.ipynb`); it is why the non-split scoring path was
-removed.
+(`notebooks/validate_scoring_on_aou.ipynb`, check 1); it is why the non-split
+scoring path was removed.
 
 Several tests deliberately pin **known bugs** so a fix is reviewable; each says so
 in its docstring and points at `TODO.md`. Do not "make them pass" — read them.
@@ -59,41 +57,31 @@ will not catch you.
 
 ## The third tier: `notebooks/`, run on the Workbench
 
-Both offline tiers have a hole only the real Workbench can fill, so two notebooks
-are checked in. **They are not run by CI** — a human runs them on a Hail Genomic
-Analysis environment before a release.
+Offline tiers have holes only the real Workbench can fill. **Not run by CI** — a
+human runs these on a Hail Genomic Analysis environment before a release.
 
 - `validate_scoring_on_aou.ipynb` — the real-data counterpart of
-  `tests/integration/`. Every fixture in `tests/integration/conftest.py` is a
-  *claim about the shape of the real VDS*; if a claim is false the mock suite
-  stays green and the scores are wrong anyway. So this notebook **finds a real
-  variant of each shape** in the real VDS and checks the library against copy
-  numbers counted from `hl.vds.to_dense_mt` — an oracle that never calls
-  `min_rep`, `split_multi`, or `aoutools`. That independence is not ceremony:
-  writing it is what turned up **Finding 6**.
+  `tests/integration/`. Each `conftest.py` fixture is a *claim about the shape of
+  the real VDS*; if a claim is false the mock suite stays green and the scores are
+  wrong anyway. So this **finds a real variant of each shape** and checks the
+  library against copy numbers from `hl.vds.to_dense_mt` — an oracle that never
+  calls `min_rep`, `split_multi`, or `aoutools`. Writing it turned up **Finding
+  6**. Check 1 pins the hom-ref-has-no-entry fact on real data.
 - `validate_public_api_on_aou.ipynb` — `calculate_prs`, `calculate_prs_batch`,
   and `calculate_pgs` all hard-raise unless `output_path` starts with `gs://`, so
-  **no offline test reaches any of them**. Nor the PGS Catalog download, nor
-  `_stage_local_file_to_gcs`. This notebook is the only check on all of it.
+  **no offline test reaches them**, nor the PGS Catalog download nor
+  `_stage_local_file_to_gcs`. The only check on all of it.
+- `measure_minrep_locus_shift.ipynb` — records why Finding 5 is closed (locus-
+  shift rate is zero in AoU); re-run it if the tripwire below ever fires.
 
-`aoutools.init_hail()` and `aoutools.get_vds_path()` (`_workbench.py`) exist so
-the Workbench boilerplate lives in one place: requester-pays billing from
-`$GOOGLE_PROJECT`, the reference genome set *after* `hl.init` (passing
-`default_reference` to it is deprecated), and a fallback for `$WGS_VDS_PATH`,
-which current Workbench images no longer export. The fallback names a specific
-All of Us data release and **warns**; bump `DEFAULT_VDS_PATH` when AoU cuts a new
-one. It is deliberately not auto-discovered — picking "the newest version in the
-bucket" could hand back genomic data that does not match the CDR the workspace is
-registered against, which is a wrong analysis rather than an error.
-
-Two older notebooks record findings rather than validate the library.
-`verify_hom_ref_dosage.ipynb` (why the non-split path was removed) is **frozen
-evidence** — its cells construct `PRSConfig(split_multi=False)` and raise
-`TypeError` today, so they keep the pre-helper `hl.init` boilerplate on
-purpose; modernizing cells that cannot run would only make them look as if they
-could. `measure_minrep_locus_shift.ipynb` (why Finding 5 was closed) **is still
-runnable**, and it is what you re-run if the locus-shift tripwire in
-`validate_scoring_on_aou.ipynb` ever fires on a new VDS release.
+`aoutools.init_hail()` and `aoutools.get_vds_path()` (`_workbench.py`) keep the
+Workbench boilerplate in one place: requester-pays from `$GOOGLE_PROJECT`, the
+reference set *after* `hl.init` (passing `default_reference` to it is deprecated),
+and a fallback for `$WGS_VDS_PATH`, which current images no longer export. The
+fallback names a specific AoU release and **warns**; bump `DEFAULT_VDS_PATH` when
+AoU cuts a new one. It is deliberately not auto-discovered — "newest in the
+bucket" could return data not matching the workspace's CDR, a wrong analysis
+rather than an error.
 
 ## Lint & formatting
 
@@ -123,33 +111,31 @@ Public API is re-exported from internal `_`-prefixed modules via
 - `download_pgs` (`_downloader.py`), `PRSConfig` (`_config.py`, all calc params).
 
 **Calculation strategy** (the core design): to stay cheap on the large VDS, the
-weights table is chunked into `chunk_size` variants; each chunk builds 1bp
-intervals for `hl.vds.filter_intervals` so only relevant loci are read, computes
-its PRS, and results are summed across chunks. There is **one** scoring path:
-`hl.vds.split_multi` splits multi-allelic sites, then the weights are matched to
-each row. Shared helpers live in `_calculator_utils.py`.
+weights are chunked into `chunk_size` variants; each chunk builds 1bp intervals
+for `hl.vds.filter_intervals` so only relevant loci are read, and results are
+summed across chunks. One scoring path: `hl.vds.split_multi` splits multi-allelic
+sites, then the weights are matched to each row. Helpers live in
+`_calculator_utils.py`.
 
-**The join is by locus, then alleles locally — never a re-key.** The split
-`variant_data` is keyed by `(locus, alleles)` in the VDS's own — possibly
-non-minimal — representation, while a GWAS names variants minimally. Matching on
-the full row key would therefore mean rewriting the VDS alleles to minimal form,
-i.e. `key_rows_by`, which **shuffles the whole chunk's entries**. Instead
-`_group_weights_by_locus` groups the (small) weights into one array per locus;
-`weights_by_locus[mt.locus]` is a key-*prefix* join against the MT's leading
-key, which hail does with no shuffle; and `_match_weight_at_locus` then picks the
-row whose **unordered allele set** equals the row's minimal `canonical_alleles`
-(annotated by `_split_multi_with_total_dosage`). Only the small weights table
-moves. The set match is orientation-agnostic by construction, so it also handles
-a file that writes the pair either way round.
+**The join must survive two mismatches between the weights and the VDS, each of
+which was a silent-drop bug.** (1) *Allele order* — orientation is per-row, not
+file-wide (the PGS Catalog does not harmonize the effect allele onto the ALT), so
+a `G/A` SNP whose REF sorts after its ALT (`chr1:8000`) must still match. An
+earlier `hl.sorted` key matched only REF-before-ALT variants and dropped ~half of
+every score (922 of 1,940 for PGS000746). (2) *Minimal representation* —
+`split_multi` only `min_rep`s the rows it splits, so an already-biallelic
+non-minimal variant (`AAAG/GAAG`, a GWAS's `A/G`, `chr1:8500`) passes through
+un-normalized and never matches. Both are closed together:
+`_split_multi_with_total_dosage` annotates `canonical_alleles` (the `min_rep` of
+every row; idempotent on split rows), and `_match_weight_at_locus` matches on the
+unordered allele **set** against it. Both shapes are pinned in `tests/integration/`.
 
-Two silent-drop bugs are pinned here, both invisible until real data. A `G/A`
-SNP where REF sorts after ALT (`chr1:8000`) broke an earlier `hl.sorted` key
-that only matched REF-before-ALT variants — it cost ~half of every real score
-(922 of 1,940 for PGS000746). A non-minimal biallelic like `AAAG/GAAG`
-(`chr1:8500`), which `split_multi` passes through un-normalized, never matched
-its minimally-named `A/G` weights. The allele-set-on-`canonical_alleles` match
-closes both. Do **not** "simplify" this to a keyed `(locus, alleles)` join: it
-reintroduces one or both drops, or the entry-shuffling re-key.
+The match is also **shuffle-free**, which is why it is not a keyed join.
+`_group_weights_by_locus` groups the small weights into one array per locus;
+`weights_by_locus[mt.locus]` is a key-*prefix* join (no shuffle), then alleles
+match locally. Keying on `(locus, alleles)` instead would force a `key_rows_by`
+to minimal alleles, **shuffling every entry**. Do **not** "simplify" to a keyed
+`(locus, alleles)` join: it reintroduces a silent drop or the re-key shuffle.
 
 **The hom-ref offset.** Orientation is resolved per row against the VDS's REF.
 When the effect allele is the REF, the true contribution is `w·(2 − n_non_ref)`,
@@ -176,29 +162,14 @@ path that zeroed every hom-ref sample at a REF-effect variant (reordering the
 cohort), and `ref_is_effect_allele` declared orientation file-wide when it is a
 per-row property, dropping every row that disagreed. `TODO.md` has the evidence.
 
-**`hl.vds.split_multi` is called with the default `filter_changed_loci=False`,
-which raises. That is deliberate — don't set it to `True` to silence an error.**
-`min_rep` trimming a shared *suffix* is safe and relied on (`[AGGGC, A, GGGGC]` →
-`A/G` at the same locus, which is how a GWAS names it). Trimming a shared *prefix*
-would *move* the locus, and hail can then only raise or silently drop the allele.
-No such variant exists in AoU (0 of 6,001,424 ALTs measured), so the exception is
-a tripwire for a future VDS release, not a crash risk.
-
-**`split_multi` only min_reps the rows it actually splits**, which is why
-`_split_multi_with_total_dosage` annotates a `canonical_alleles` row field (the
-`min_rep` of every row) for the join above to match on. An already-biallelic row
-is passed through with its *original* alleles, so without this a non-minimal
-biallelic variant — `AAAG/GAAG`, an A→G SNP a GWAS names `A/G` — keeps
-`AAAG/GAAG` and never joins the minimally-named weights, scoring 0 with no error.
-`min_rep` is idempotent on the rows split_multi already reduced, so annotating
-every row only changes the passthroughs, and it is annotate-not-re-key precisely
-so the entry data never shuffles. The locus-shift tripwire (`or_error` if
-`min_rep` moves the locus) is carried onto these passthrough rows too, which
-`filter_changed_loci` does not cover. The multi-allelic non-minimal case is
-normalized as a *side effect* of splitting and so hid this for a long time;
-`validate_scoring_on_aou.ipynb` found it on the real VDS (`chr1:1409159
-AAAG/GAAG`) because its non-minimal fixture is biallelic where
-`tests/integration/`'s was only multi-allelic. Both shapes are now pinned.
+**The locus-shift tripwire.** `min_rep` trimming a shared *suffix* is safe and
+relied on (`[AGGGC, A, GGGGC]` → `A/G`, same locus, how a GWAS names it). Trimming
+a shared *prefix* would *move* the locus, which hail can only raise on or silently
+drop. `hl.vds.split_multi` runs with the default `filter_changed_loci=False`
+(raises), and the `canonical_alleles` annotation carries the same `or_error` guard
+onto biallelic passthroughs that split_multi doesn't cover. No such variant exists
+in AoU (0 of 6,001,424 ALTs), so this is a tripwire for a future VDS release, not
+a crash risk — don't set `filter_changed_loci=True` to silence it.
 
 `_utils.py:_stage_local_file_to_gcs` copies local paths into
 `$WORKSPACE_BUCKET/data/...` because Hail's Spark cluster can't read the local

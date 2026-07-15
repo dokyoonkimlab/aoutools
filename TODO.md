@@ -7,9 +7,12 @@
 analysis below was originally done by reading code, and reading code got two
 things wrong.
 
-The core findings were then **confirmed on the real All of Us VDS** with
-`notebooks/verify_hom_ref_dosage.ipynb`, run on the Workbench. Those numbers are
-quoted inline below — they are not from the mock.
+The core findings were then **confirmed on the real All of Us VDS** on the
+Workbench. Those numbers are quoted inline below — they are not from the mock.
+The live check on current code is `notebooks/validate_scoring_on_aou.ipynb`
+(check 1 re-confirms the hom-ref fact); the earlier
+`verify_hom_ref_dosage.ipynb`, which measured the now-removed non-split path,
+has been retired.
 
 **All three tasks are closed.** The non-split scoring path is gone (Findings 1-3
 went with it), allele orientation is resolved per row (Finding 4), and Finding 5

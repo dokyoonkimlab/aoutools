@@ -50,7 +50,7 @@ at a row. A hom-ref sample is **absent**, and hail *filters absent entries out o
 the entry stream* — aggregators never visit them, so **no default of any kind can
 be applied to them**. This is not a mock artifact; it is confirmed on the real
 All of Us VDS (94 of 200 samples had zero entries across a 5-variant window; see
-`notebooks/verify_hom_ref_dosage.ipynb`).
+`notebooks/validate_scoring_on_aou.ipynb`, check 1).
 
 Any scheme that tries to give a hom-ref sample a dosage by handling a *missing
 genotype* is therefore unreachable. A missing genotype is a **no-call** — an
