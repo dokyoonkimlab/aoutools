@@ -71,6 +71,19 @@ human runs these on a Hail Genomic Analysis environment before a release.
   and `calculate_pgs` all hard-raise unless `output_path` starts with `gs://`, so
   **no offline test reaches them**, nor the PGS Catalog download nor
   `_stage_local_file_to_gcs`. The only check on all of it.
+- `validate_synthetic_control_on_aou.ipynb` — the **positive-control** tier.
+  Rather than *finding* a real variant of each shape, it **builds** a synthetic
+  VDS and weights file in which every scoring path is present by construction,
+  computes the expected PRS independently (pure Python over the design,
+  cross-checked against a `to_dense_mt` oracle), and drives the **public API**
+  against that control — so it checks the user-facing functions and the `gs://`
+  round-trip on a *known answer*, which `validate_public_api_on_aou.ipynb` (real
+  PGS files, no ground truth) cannot. Ships a diagnostic toolkit that decomposes
+  a discrepancy per variant and classifies its signature (constant offset /
+  genotype-dependent / whole-variant drop / no-call) onto the matching `TODO.md`
+  finding. Because its data is synthetic real-hail (not the real VDS), every cell
+  except the `gs://` public-API ones runs offline under `pixi run -e integration`
+  too — the same tier `tests/integration/` uses.
 - `measure_minrep_locus_shift.ipynb` — records why Finding 5 is closed (locus-
   shift rate is zero in AoU); re-run it if the tripwire below ever fires.
 
