@@ -135,10 +135,16 @@ Two guards were added instead:
 
 - **`filter_changed_loci` stays at `False` (raise) deliberately.** With a measured
   rate of zero, that exception is not a crash risk — it is a **tripwire**. If a
-  future VDS release ever changes variant representation, the run fails loudly
-  instead of quietly dropping variants and producing a plausible, wrong score.
-  Setting it to `True` would convert the tripwire into precisely the silent data
-  loss this whole document is about.
+  future VDS release ever changes variant representation, a shifted variant that
+  *reaches* `split_multi` fails loudly instead of quietly dropping and producing a
+  plausible, wrong score. It is a **split-step** guard, so it does not cover the
+  prefilter case above: a variant whose row sits upstream of its minrep'd,
+  GWAS-named locus is dropped by `filter_intervals` *before* the split — a silent
+  `n_matched` shortfall, not a raise. So `tests/integration/` and
+  `notebooks/validate_synthetic_control_on_aou.ipynb` pin the raise through the
+  `_calculate_prs_chunk` seam, which splits the unfiltered VDS. Setting
+  `filter_changed_loci` to `True` would convert the tripwire into precisely the
+  silent data loss this whole document is about.
   (`test_a_locus_shifting_variant_raises_rather_than_vanishing`)
 - **The normalization we *do* rely on is now tested.** Suffix trimming — a
   multi-allelic, non-minimally-represented variant reducing to the `A/G` a GWAS

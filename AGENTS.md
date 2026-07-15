@@ -182,7 +182,14 @@ drop. `hl.vds.split_multi` runs with the default `filter_changed_loci=False`
 (raises), and the `canonical_alleles` annotation carries the same `or_error` guard
 onto biallelic passthroughs that split_multi doesn't cover. No such variant exists
 in AoU (0 of 6,001,424 ALTs), so this is a tripwire for a future VDS release, not
-a crash risk — don't set `filter_changed_loci=True` to silence it.
+a crash risk. The raise is a **split-step** guard, so it only catches a shifted
+variant that reaches `split_multi`: the per-chunk interval prefilter is built at
+the *weights* locus, so `filter_intervals` drops a variant whose row sits upstream
+of its minrep'd, GWAS-named locus *before* it is split — making a downstream-named
+shift a silent `n_matched` shortfall, not a raise. `tests/integration/` and
+`notebooks/validate_synthetic_control_on_aou.ipynb` pin the raise through the
+`_calculate_prs_chunk` seam (which splits the unfiltered VDS) for that reason.
+Don't set `filter_changed_loci=True` to silence it.
 
 `_utils.py:_stage_local_file_to_gcs` copies local paths into
 `$WORKSPACE_BUCKET/data/...` because Hail's Spark cluster can't read the local
