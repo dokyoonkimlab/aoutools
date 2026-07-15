@@ -11,7 +11,8 @@ from aoutools._utils.helpers import SimpleTimer
 from ._calculator_utils import (
     _create_1bp_intervals,
     _entry_contribution,
-    _key_weights_by_variant,
+    _group_weights_by_locus,
+    _match_weight_at_locus,
     _orient_weight_and_offset,
     _prepare_samples_to_keep,
     _prepare_weights_for_chunking,
@@ -29,9 +30,11 @@ def _prepare_mt_split(
     """
     Prepares a MatrixTable for PRS calculation.
 
-    Splits multi-allelic sites in the VDS, joins the weights on (locus, sorted
-    allele pair), and resolves each matched row against the VDS's own REF/ALT
-    orientation. Dosage is `GT.n_alt_alleles()` after splitting.
+    Splits multi-allelic sites in the VDS, matches the weights by locus and
+    then by minimal alleles (a shuffle-free join; see `_group_weights_by_locus`
+    and `_match_weight_at_locus`), and resolves each matched row against the
+    VDS's own REF/ALT orientation. Dosage is `GT.n_alt_alleles()` after
+    splitting.
 
     Rows are annotated with `weight_per_alt_copy` and `hom_ref_offset`. The
     caller must add the offset -- a row-level constant -- to every sample; see
@@ -70,8 +73,17 @@ def _prepare_mt_split(
         # for the mechanism and the deliberate `filter_changed_loci` tripwire.
         mt = _split_multi_with_total_dosage(vds)
 
-        weights_ht_processed = _key_weights_by_variant(weights_table)
-        mt = mt.annotate_rows(weights_info=weights_ht_processed[mt.row_key])
+        # Match weights by locus (a shuffle-free key-prefix join) and then by
+        # alleles locally against the row's minimal `canonical_alleles`. Keying
+        # the weights on the full (locus, alleles) instead would force the MT to
+        # be re-keyed to minimal alleles -- a shuffle of every entry. See
+        # `_group_weights_by_locus` and `_match_weight_at_locus`.
+        weights_by_locus = _group_weights_by_locus(weights_table)
+        mt = mt.annotate_rows(
+            weights_info=_match_weight_at_locus(
+                weights_by_locus[mt.locus].variants, mt.canonical_alleles
+            )
+        )
 
         # Only rows that matched a variant in the VDS survive. This filter is
         # what makes it safe to add `hom_ref_offset` to every sample below: an
@@ -83,7 +95,7 @@ def _prepare_mt_split(
         config.detailed_timings,
     ):
         weight_per_alt_copy, hom_ref_offset, ref_is_effect = (
-            _orient_weight_and_offset(mt, mt.weights_info)
+            _orient_weight_and_offset(mt.canonical_alleles[0], mt.weights_info)
         )
         mt = mt.annotate_rows(
             weight_per_alt_copy=weight_per_alt_copy,

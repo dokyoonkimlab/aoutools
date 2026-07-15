@@ -135,49 +135,42 @@ def _validate_and_prepare_weights_table(
     return weights_table.select("effect_allele", "noneffect_allele", "weight")
 
 
-def _key_weights_by_variant(ht: hl.Table) -> hl.Table:
+def _group_weights_by_locus(ht: hl.Table) -> hl.Table:
     """
-    Keys a weights table by (locus, allele pair) for the join, both ways round.
+    Groups a weights table by locus into a per-locus array of variants.
 
-    The join target is the row key of the split `variant_data`, which is
-    `(locus, [REF, ALT])` in the **VDS's own order**. A weights file names its
-    alleles in whatever order it likes, so to match a weights row whichever way
-    round it is written, each one is emitted **twice** -- once as
-    `[effect, noneffect]` and once as `[noneffect, effect]`. Exactly one of the
-    two can equal `[REF, ALT]`, so a variant still matches at most once.
+    Returns a table keyed by `locus` alone, with a `variants` field holding an
+    array of every weights row at that locus (`effect_allele`,
+    `noneffect_allele`, `weight`). `_match_weight_at_locus` picks the right one.
 
-    Canonicalizing with `hl.sorted` instead does not work, and failing that way
-    is silent: the VDS side is not sorted, so a sorted weights key matches only
-    the variants whose REF happens to sort before their ALT. A `G/A` SNP is
-    keyed `[A, G]` by the weights and `[G, A]` by the VDS, never joins, and
-    drops out of the score as though it were absent from the VDS -- taking
-    roughly half of a real weights file with it, biased toward REF=A and REF=C.
-    Every score stays finite and plausible. `tests/integration/
-    test_allele_matching.py::test_a_variant_whose_ref_sorts_after_its_alt_scores`
-    pins it; every fixture predating that test happened to have REF < ALT.
+    Why key by locus and not by `(locus, alleles)`. The split `variant_data`
+    is keyed by `(locus, alleles)`, partitioned by locus, but its alleles are
+    the VDS's own -- possibly non-minimal -- representation, while a GWAS names
+    variants minimally. Matching on the row key therefore requires *rewriting*
+    the VDS alleles to minimal form, which means re-keying the MatrixTable, and
+    a re-key shuffles the whole chunk (entries and all).
 
-    Duplicating the row cannot double-count a variant: the two copies differ in
-    the `alleles` key, so at most one of them equals `[REF, ALT]`. The one case
-    where they would *not* differ is a degenerate row naming the same allele
-    twice (`A`/`A`) -- which no VDS row can match anyway, since REF != ALT --
-    so those are dropped here rather than left to collide in the key.
+    Keying the weights by locus alone avoids that. `weights_by_locus[mt.locus]`
+    is a key-*prefix* join against the MT's leading key, which hail does with no
+    shuffle -- only the small weights table is grouped. Alleles are then matched
+    locally against `mt.canonical_alleles` (the minimal form annotated by
+    `_split_multi_with_total_dosage`), by `_match_weight_at_locus`. So the big
+    entry data never moves. This is the whole reason the split MT is left on its
+    own key rather than normalized in place.
 
-    Orientation is read per row off the VDS (see `_orient_weight_and_offset`),
-    not declared globally for the file -- `alleles[0]` is the true REF either
-    way, which is why the *weights* are duplicated rather than the VDS re-keyed
-    on a sorted pair. That would fix the join and break orientation.
+    The locus alone is not a *variant* identity -- a file may name more than one
+    variant at a position -- which is exactly why `variants` is an array and the
+    allele match is kept: a weights row for an A/G SNP must not match an A/T
+    variant at the same locus. A degenerate row naming the same allele twice
+    (`A`/`A`) can match no VDS row (REF != ALT) and is dropped here.
 
-    That orientation is per-row matters because the PGS Catalog does not
-    harmonize the effect allele onto the ALT: its spec says the effect allele
-    "does not necessarily need to correspond to the minor allele/alternative
-    allele", and harmonized (HmPOS) files remap coordinates while preserving
-    the original allele columns. A single file routinely carries both.
-
-    The locus alone is not enough of a key: a weights file may name more than
-    one variant at a position, and a locus-only lookup would arbitrarily pick
-    one of them. Keeping the alleles in the key also means the key *is* the
-    variant-identity check -- a weights row for an A/G SNP cannot match an A/T
-    variant sitting at the same locus.
+    Orientation is read per row off the VDS's REF (`_orient_weight_and_offset`),
+    not declared file-wide, because the PGS Catalog does not harmonize the
+    effect allele onto the ALT: its spec says the effect allele "does not
+    necessarily need to correspond to the minor allele/alternative allele", and
+    harmonized (HmPOS) files remap coordinates while preserving the original
+    allele columns. A single file routinely carries both orientations, which the
+    unordered allele-set match in `_match_weight_at_locus` handles directly.
 
     Parameters
     ----------
@@ -188,13 +181,42 @@ def _key_weights_by_variant(ht: hl.Table) -> hl.Table:
     Returns
     -------
     hail.Table
-        A table keyed by 'locus' and 'alleles', with two rows per input row --
-        one per allele order. Weights are left untouched.
+        A table keyed by 'locus', with a 'variants' array of
+        `struct(effect_allele, noneffect_allele, weight)`.
     """
     ht = ht.filter(ht.effect_allele != ht.noneffect_allele)
-    forward = ht.annotate(alleles=[ht.effect_allele, ht.noneffect_allele])
-    reverse = ht.annotate(alleles=[ht.noneffect_allele, ht.effect_allele])
-    return forward.union(reverse).key_by("locus", "alleles")
+    return ht.group_by(ht.locus).aggregate(
+        variants=hl.agg.collect(
+            hl.struct(
+                effect_allele=ht.effect_allele,
+                noneffect_allele=ht.noneffect_allele,
+                weight=ht.weight,
+            )
+        )
+    )
+
+
+def _match_weight_at_locus(
+    variants_at_locus: hl.expr.ArrayExpression,
+    canonical_alleles: hl.expr.ArrayExpression,
+) -> hl.expr.StructExpression:
+    """
+    Picks the weights row at a locus whose alleles match this variant.
+
+    `variants_at_locus` is the `variants` array from `_group_weights_by_locus`
+    (missing if the locus carries no weight); `canonical_alleles` is the row's
+    minimal `[ref, alt]` from `_split_multi_with_total_dosage`. Returns the
+    matching `struct(effect_allele, noneffect_allele, weight)`, or missing.
+
+    The match is on the unordered allele **set**, so it succeeds whichever way
+    round the GWAS wrote the pair -- the orientation itself is resolved later,
+    per row, from `canonical_alleles[0]` (the REF). `.find` on a missing array
+    is missing, so a locus with no weights simply yields no match.
+    """
+    target = hl.set(canonical_alleles)
+    return variants_at_locus.find(
+        lambda v: hl.set([v.effect_allele, v.noneffect_allele]) == target
+    )
 
 
 def _split_multi_with_total_dosage(
@@ -231,8 +253,10 @@ def _split_multi_with_total_dosage(
     Returns
     -------
     hail.MatrixTable
-        The split `variant_data`, with a `GT` entry field (downcoded, per-ALT)
-        and an `n_non_ref` entry field (total, pre-split).
+        The split `variant_data`, still keyed on its own (possibly non-minimal)
+        `(locus, alleles)`, with a `GT` entry field (downcoded, per-ALT), an
+        `n_non_ref` entry field (total, pre-split), and a `canonical_alleles`
+        row field holding the minimal `[ref, alt]` the join matches on.
     """
     vd = vds.variant_data
 
@@ -263,11 +287,44 @@ def _split_multi_with_total_dosage(
     # tests/integration/test_allele_matching.py
     # ::test_a_locus_shifting_variant_raises_rather_than_vanishing
     split = hl.vds.split_multi(hl.vds.VariantDataset(vds.reference_data, vd))
-    return split.variant_data
+    svd = split.variant_data
+
+    # split_multi only guarantees minimal representation for rows it actually
+    # SPLIT. An already-biallelic row is passed through with its ORIGINAL
+    # alleles, so a non-minimal biallelic variant -- e.g. AAAG/GAAG, which a
+    # GWAS names A/G -- keeps AAAG/GAAG and would never join the minimally-named
+    # weights: it would score 0 with no error (`n_matched` just runs low). The
+    # min_rep inside split_multi, and its filter_changed_loci tripwire, reach
+    # only the rows it split.
+    #
+    # So annotate every row with its minimal alleles here. The join matches on
+    # this field, not on the row key, so we do NOT re-key -- re-keying would
+    # shuffle the whole chunk (entries and all); annotating is a free row op.
+    # min_rep is idempotent on the rows split_multi already reduced, so this
+    # only changes the biallelic passthroughs. See `_group_weights_by_locus`
+    # and `_match_weight_at_locus` for the shuffle-free join that consumes it.
+    #
+    # The same locus-shift tripwire applies: a shared PREFIX moves the locus,
+    # which hail cannot key across, so raise rather than silently drop -- the
+    # biallelic analogue of split_multi's filter_changed_loci=False, which does
+    # not cover these passthrough rows.
+    mr = hl.min_rep(svd.locus, svd.alleles)
+    canonical_alleles = (
+        hl.case()
+        .when(mr.locus == svd.locus, mr.alleles)
+        .or_error(
+            "min_rep moved a variant's locus at "
+            + hl.str(svd.locus)
+            + " -- a shared-prefix representation hail cannot key across. "
+            "See _split_multi_with_total_dosage; do not silence this."
+        )
+    )
+    return svd.annotate_rows(canonical_alleles=canonical_alleles)
 
 
 def _orient_weight_and_offset(
-    mt: hl.MatrixTable, weights_info: hl.expr.StructExpression
+    ref_allele: hl.expr.StringExpression,
+    weights_info: hl.expr.StructExpression,
 ) -> tuple[
     hl.expr.Float64Expression,
     hl.expr.Float64Expression,
@@ -318,8 +375,10 @@ def _orient_weight_and_offset(
 
     Parameters
     ----------
-    mt : hail.MatrixTable
-        A split (bi-allelic) MatrixTable whose `alleles` field is `[ref, alt]`.
+    ref_allele : hail.expr.StringExpression
+        The variant's reference allele in minimal form -- `canonical_alleles[0]`
+        from `_split_multi_with_total_dosage`, not the row's own (possibly
+        non-minimal) `alleles[0]`, so orientation lines up with the join.
     weights_info : hail.expr.StructExpression
         The matched weights row: 'effect_allele', 'noneffect_allele', 'weight'.
 
@@ -329,7 +388,7 @@ def _orient_weight_and_offset(
         The per-copy weight, the hom-ref offset, and whether the effect allele
         is the reference base for this row.
     """
-    ref_is_effect = weights_info.effect_allele == mt.alleles[0]
+    ref_is_effect = weights_info.effect_allele == ref_allele
     weight = weights_info.weight
 
     weight_per_alt_copy = hl.if_else(ref_is_effect, -weight, weight)

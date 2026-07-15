@@ -11,7 +11,8 @@ from aoutools._utils.helpers import SimpleTimer
 from ._calculator_utils import (
     _create_1bp_intervals,
     _entry_contribution,
-    _key_weights_by_variant,
+    _group_weights_by_locus,
+    _match_weight_at_locus,
     _orient_weight_and_offset,
     _prepare_samples_to_keep,
     _prepare_weights_for_chunking,
@@ -72,18 +73,19 @@ def _prepare_batch_weights_data(
 
     final_prepared_weights = {}
     with _log_timing(
-        "Re-keying weights tables for split-multi join",
+        "Grouping weights tables by locus for the join",
         config.detailed_timings,
     ):
         for score_name, ht in prepared_weights.items():
-            final_prepared_weights[score_name] = _key_weights_by_variant(ht)
+            final_prepared_weights[score_name] = _group_weights_by_locus(ht)
 
     loci_to_keep = hl.Table.union(*all_loci_tables).key_by("locus").distinct()
     return final_prepared_weights, loci_to_keep
 
 
 def _build_row_annotations(
-    mt_key: hl.expr.StructExpression,
+    mt_locus: hl.expr.LocusExpression,
+    mt_canonical_alleles: hl.expr.ArrayExpression,
     weights_tables_map: dict[str, hl.Table],
     prepared_weights: dict[str, hl.Table],
 ) -> dict[str, hl.expr.Expression]:
@@ -96,19 +98,23 @@ def _build_row_annotations(
     - `is_valid_{score}`: A boolean expression indicating whether a valid match
       was found for that score.
 
-    Rows are split and keyed on (locus, alleles), so the join key itself is the
-    allele check: a weights row only matches a variant with the same alleles.
+    The join is the same shuffle-free one the single-score path uses: match by
+    locus (a key-prefix join, `prepared_weights[score][mt_locus]`), then by
+    alleles locally against the row's minimal `canonical_alleles`. See
+    `_group_weights_by_locus` and `_match_weight_at_locus`.
 
     Parameters
     ----------
-    mt_key : hl.expr.StructExpression
-        A struct expression (e.g., `hl.struct(locus=..., alleles=...)`) used to
-        join against each weights table.
+    mt_locus : hl.expr.LocusExpression
+        The MatrixTable row's locus (its leading key), joined against each
+        locus-grouped weights table.
+    mt_canonical_alleles : hl.expr.ArrayExpression
+        The row's minimal `[ref, alt]` from `_split_multi_with_total_dosage`,
+        matched locally against the weights at that locus.
     weights_tables_map : dict[str, hl.Table]
         A dictionary mapping score names to the original weights tables.
     prepared_weights : dict[str, hl.Table]
-        A dictionary of validated and re-keyed weights tables, prepared for
-        lookup during annotation.
+        A dictionary of validated, locus-grouped weights tables.
 
     Returns
     -------
@@ -118,7 +124,10 @@ def _build_row_annotations(
     """
     annotations = {}
     for score_name in weights_tables_map:
-        weights_info_expr = prepared_weights[score_name][mt_key]
+        weights_info_expr = _match_weight_at_locus(
+            prepared_weights[score_name][mt_locus].variants,
+            mt_canonical_alleles,
+        )
         annotations[f"weights_info_{score_name}"] = weights_info_expr
         annotations[f"is_valid_{score_name}"] = hl.is_defined(weights_info_expr)
     return annotations
@@ -163,7 +172,7 @@ def _build_prs_agg_expr(
     is_valid = mt[f"is_valid_{score_name}"]
 
     weight_per_alt_copy, hom_ref_offset, ref_is_effect = (
-        _orient_weight_and_offset(mt, weights_info)
+        _orient_weight_and_offset(mt.canonical_alleles[0], weights_info)
     )
     contribution = _entry_contribution(
         mt, weight_per_alt_copy, hom_ref_offset, ref_is_effect
@@ -232,7 +241,6 @@ def _calculate_prs_chunk_batch(
         # `filter_changed_loci` at False (raise) on purpose. See
         # `_split_multi_with_total_dosage`.
         mt = _split_multi_with_total_dosage(vds)
-        mt_key = mt.row_key
 
     # Step 2: Annotate MatrixTable rows with weights info and validity masks
     with _log_timing(
@@ -240,7 +248,10 @@ def _calculate_prs_chunk_batch(
         config.detailed_timings,
     ):
         row_annotations = _build_row_annotations(
-            mt_key, weights_tables_map, prepared_weights
+            mt.locus,
+            mt.canonical_alleles,
+            weights_tables_map,
+            prepared_weights,
         )
         mt = mt.annotate_rows(**row_annotations)
 

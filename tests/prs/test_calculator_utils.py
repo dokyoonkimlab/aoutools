@@ -11,7 +11,8 @@ import pytest
 
 from aoutools.prs import PRSConfig
 from aoutools.prs._calculator_utils import (
-    _key_weights_by_variant,
+    _group_weights_by_locus,
+    _match_weight_at_locus,
     _orient_weight_and_offset,
     _validate_and_prepare_weights_table,
 )
@@ -105,79 +106,77 @@ class TestValidateAndPrepareWeightsTable:
             _validate_and_prepare_weights_table(mock_weights_table, PRSConfig())
 
 
-class TestKeyWeightsByVariant:
+class TestGroupWeightsByLocus:
     """
-    Tests for `_key_weights_by_variant`, which builds the join key.
+    Tests for `_group_weights_by_locus`, which builds the join's small side.
 
-    A weights row must match its variant whichever way round the file writes
-    the alleles, so each row is emitted **twice** -- once per allele order --
-    and the join key is the ordered pair. Keying on the ordered pair *once* --
-    as the old `ref_is_effect_allele` code did -- silently drops every row of
-    the opposite orientation. Keying on the locus alone would instead match the
-    wrong variant when a file names two variants at one position.
-
-    Canonicalizing with `hl.sorted` instead of duplicating looks equivalent and
-    is not: the join target is the split `variant_data` row key, `(locus,
-    [REF, ALT])`, which is **not** sorted. A sorted weights key therefore only
-    ever matches variants whose REF happens to sort before their ALT -- about
-    half a real file -- and the rest vanish with no error. See
-    `tests/integration/test_allele_matching.py`
-    `::test_a_variant_whose_ref_sorts_after_its_alt_scores`, which catches it
-    on real genotypes; these tests only pin the shape of the key.
+    The weights are grouped by **locus alone** so the join to the split MT is a
+    key-*prefix* join (no shuffle); alleles are matched locally afterwards by
+    `_match_weight_at_locus`. Keying on the full `(locus, alleles)` instead
+    would force the MT to be re-keyed to minimal alleles, shuffling every
+    entry. The
+    orientation-agnostic and locus-shift behaviours are exercised for real in
+    `tests/integration/test_allele_matching.py`; these only pin the shape.
     """
 
-    def _key(self, mocker):
+    def _group(self, mocker):
         mock_hl = mocker.patch("aoutools.prs._calculator_utils.hl", MagicMock())
         mock_table = MagicMock()
         mock_table.filter.return_value = mock_table
-        mock_table.annotate.return_value = mock_table
-        mock_table.union.return_value = mock_table
-        mock_table.key_by.return_value = mock_table
-        _key_weights_by_variant(mock_table)
-        return mock_hl, mock_table
+        mock_grouped = MagicMock()
+        mock_table.group_by.return_value = mock_grouped
+        _group_weights_by_locus(mock_table)
+        return mock_hl, mock_table, mock_grouped
 
-    def test_emits_both_allele_orders_and_keys_on_the_ordered_pair(
-        self, mocker
-    ):
-        mock_hl, mock_table = self._key(mocker)
+    def test_groups_by_locus_alone(self, mocker):
+        _, mock_table, _ = self._group(mocker)
 
-        effect, noneffect = (
-            mock_table.effect_allele,
-            mock_table.noneffect_allele,
+        mock_table.group_by.assert_called_once_with(mock_table.locus)
+
+    def test_collects_a_variants_array_per_locus(self, mocker):
+        mock_hl, _, mock_grouped = self._group(mocker)
+
+        kwargs = mock_grouped.aggregate.call_args.kwargs
+        assert set(kwargs) == {"variants"}, (
+            "each locus must carry an array of its variants for the local "
+            "allele match, not a single pre-picked row"
         )
-        orders = [
-            call.kwargs["alleles"]
-            for call in mock_table.annotate.call_args_list
-        ]
-        assert orders == [[effect, noneffect], [noneffect, effect]], (
-            "both allele orders must be emitted, or a variant whose REF sorts "
-            "after its ALT never joins"
-        )
-        mock_table.union.assert_called_once_with(mock_table)
-        mock_table.key_by.assert_called_once_with("locus", "alleles")
-
-    def test_does_not_canonicalize_with_sorted(self, mocker):
-        """Regression guard. A sorted key joins against an unsorted VDS row key
-        and silently drops every variant whose REF sorts after its ALT."""
-        mock_hl, _ = self._key(mocker)
-
-        mock_hl.sorted.assert_not_called()
+        mock_hl.agg.collect.assert_called_once()
 
     def test_drops_a_row_naming_the_same_allele_twice(self, mocker):
-        """`A`/`A` would produce two identical keys, and no VDS row can match
-        it anyway -- REF and ALT always differ."""
-        _, mock_table = self._key(mocker)
+        """`A`/`A` can match no VDS row (REF != ALT), so it is filtered out
+        rather than left to pollute a locus's variants array."""
+        _, mock_table, _ = self._group(mocker)
 
         mock_table.filter.assert_called_once()
 
-    def test_does_not_touch_the_weight(self, mocker):
-        """Orientation is resolved later, per row, against the VDS's own REF.
-        The weight must arrive at that point unmodified -- negating it here, as
-        the old code did, would double-negate."""
-        _, mock_table = self._key(mocker)
+    def test_does_not_canonicalize_with_sorted(self, mocker):
+        """Regression guard against the old sorted-pair key, which silently
+        dropped every variant whose REF sorts after its ALT."""
+        mock_hl, _, _ = self._group(mocker)
 
-        for call in mock_table.annotate.call_args_list:
-            assert "weight" not in call.kwargs
+        mock_hl.sorted.assert_not_called()
+
+
+class TestMatchWeightAtLocus:
+    """
+    Tests for `_match_weight_at_locus`, the local allele match after the join.
+    """
+
+    def test_matches_on_the_unordered_allele_set(self, mocker):
+        """The match must succeed whichever way round the GWAS wrote the pair --
+        orientation is resolved later, from the REF. So it compares allele
+        *sets*, not ordered pairs."""
+        mock_hl = mocker.patch("aoutools.prs._calculator_utils.hl", MagicMock())
+        variants = MagicMock()
+        canonical = MagicMock()
+
+        _match_weight_at_locus(variants, canonical)
+
+        # The target is the canonical alleles as a set, and the locus's
+        # variants array is searched with `find` (not indexed by order).
+        mock_hl.set.assert_any_call(canonical)
+        variants.find.assert_called_once()
 
 
 class TestOrientWeightAndOffset:
@@ -197,14 +196,14 @@ class TestOrientWeightAndOffset:
             lambda cond, if_true, if_false: if_true if cond else if_false
         )
 
-        mt = MagicMock()
         weights_info = MagicMock()
-        if ref_is_effect:
-            # `effect_allele == alleles[0]` is True when they are the same
-            # object: MagicMock's default __eq__ is identity.
-            mt.alleles.__getitem__.return_value = weights_info.effect_allele
+        # `effect_allele == ref_allele` is True when they are the same object:
+        # MagicMock's default __eq__ is identity.
+        ref_allele = (
+            weights_info.effect_allele if ref_is_effect else MagicMock()
+        )
 
-        return weights_info, _orient_weight_and_offset(mt, weights_info)
+        return weights_info, _orient_weight_and_offset(ref_allele, weights_info)
 
     def test_effect_allele_on_the_alt_keeps_the_weight_and_adds_no_offset(
         self, mocker

@@ -71,6 +71,16 @@ VARIANTS = [
     # between that bug and a green run. Genotypes mirror chr1:1000 exactly, so
     # the two must score identically under either orientation.
     ("chr1:8000", ["G", "A"], {"S2": [0, 1], "S3": [1, 1]}),
+    # BIALLELIC and non-minimally represented: AAAG/GAAG is an A->G SNP written
+    # with three shared suffix bases, which is how the real AoU VDS stores some
+    # SNPs. `hl.vds.split_multi` min_reps only the rows it SPLITS; an already-
+    # biallelic row is passed through with its original alleles. So without an
+    # explicit normalization this row stays AAAG/GAAG and never joins a weights
+    # row that names it minimally (A/G) -- it scores 0, silently. chr1:6000
+    # covers the multi-allelic version, which splitting happens to normalize;
+    # this covers the biallelic version, which it does not. Found on the real
+    # VDS by validate_scoring_on_aou.ipynb (chr1:1409159).
+    ("chr1:8500", ["AAAG", "GAAG"], {"S2": [0, 1], "S3": [1, 1]}),
 ]
 
 # Every weight is 1.0, so `prs` is literally the summed count of effect-allele

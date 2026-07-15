@@ -125,8 +125,8 @@ class TestBatchHelpers:
             "aoutools.prs._calculator_batch._validate_and_prepare_weights_table",
             side_effect=lambda weights_table, config: weights_table,
         )
-        mock_orient = mocker.patch(
-            "aoutools.prs._calculator_batch._key_weights_by_variant",
+        mock_group = mocker.patch(
+            "aoutools.prs._calculator_batch._group_weights_by_locus",
             side_effect=lambda ht: ht,
         )
 
@@ -136,7 +136,7 @@ class TestBatchHelpers:
 
         # Assert
         assert mock_validate.call_count == 2
-        assert mock_orient.call_count == 2
+        assert mock_group.call_count == 2
         mock_hl.Table.union.assert_called_once()
 
     def test_calculate_prs_chunk_batch(self, mocker):

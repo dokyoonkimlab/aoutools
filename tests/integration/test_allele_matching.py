@@ -17,6 +17,7 @@ The mock VDS (weights effect allele in brackets):
   chr1:6000   AGGGC / A,GGGGC    -/-  -/G  G/G  -/-      [G] / A   min_rep'd
   chr1:7000   A / C,G            A/A  C/C  A/G  A/A      [A] / G
   chr1:8000   G / A              G/G  G/A  A/A  G/G      both      REF > ALT
+  chr1:8500   AAAG / GAAG        -/-  -/G  G/G  -/-      [G] / A   biallelic mr
 
 S1 is homozygous reference at every site, so it has no entry in `variant_data`
 at all. S4 has an entry at chr1:2000 whose genotype is missing -- a no-call.
@@ -178,6 +179,40 @@ def test_normalizes_a_non_minimal_representation(vds_lgt):
     prs, n_matched = score(vds_lgt, raw)
 
     assert n_matched == 1, "the A/G weights row must match [AGGGC, A, GGGGC]"
+    assert prs["S1"] == 0.0  # hom-ref
+    assert prs["S2"] == 1.0  # carries one copy of the SNP allele
+    assert prs["S3"] == 2.0  # homozygous for it
+    assert prs["S4"] == 0.0  # hom-ref
+
+
+def test_normalizes_a_non_minimal_biallelic_variant(vds_lgt):
+    """CORRECT, and the case the multi-allelic test above does NOT cover.
+
+    `chr1:8500` is stored as `[AAAG, GAAG]` -- an A->G SNP written with three
+    shared suffix bases, biallelic. A GWAS names it `A/G`. Crucially,
+    `hl.vds.split_multi` min_reps only the rows it actually *splits*; a row that
+    is already biallelic is passed through with its original alleles. So the
+    normalization the multi-allelic case gets for free (chr1:6000) does NOT
+    happen here unless the library does it explicitly.
+
+    Without that step this row stays `AAAG/GAAG`, the `A/G` weights key never
+    matches, and every carrier scores 0 with no error -- exactly the FAIL that
+    validate_scoring_on_aou.ipynb turned up on the real VDS (chr1:1409159).
+    """
+    raw = hl.Table.parallelize(
+        [{"chr": "chr1", "pos": 8500, "effect_allele": "G",
+          "noneffect_allele": "A", "weight": 1.0}],
+        hl.tstruct(
+            chr=hl.tstr, pos=hl.tint32, effect_allele=hl.tstr,
+            noneffect_allele=hl.tstr, weight=hl.tfloat64,
+        ),
+    )  # fmt: skip
+    prs, n_matched = score(vds_lgt, raw)
+
+    assert n_matched == 1, (
+        "the A/G weights row must match the biallelic [AAAG, GAAG]; if it does "
+        "not, split_multi left the passthrough row non-minimal"
+    )
     assert prs["S1"] == 0.0  # hom-ref
     assert prs["S2"] == 1.0  # carries one copy of the SNP allele
     assert prs["S3"] == 2.0  # homozygous for it

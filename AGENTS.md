@@ -126,22 +126,30 @@ Public API is re-exported from internal `_`-prefixed modules via
 weights table is chunked into `chunk_size` variants; each chunk builds 1bp
 intervals for `hl.vds.filter_intervals` so only relevant loci are read, computes
 its PRS, and results are summed across chunks. There is **one** scoring path:
-`hl.vds.split_multi` splits multi-allelic sites, and the weights are joined on
-(locus, allele pair) — so the join key *is* the allele check. Shared helpers
-live in `_calculator_utils.py`.
+`hl.vds.split_multi` splits multi-allelic sites, then the weights are matched to
+each row. Shared helpers live in `_calculator_utils.py`.
 
-**The join key is the VDS's allele order, and the weights carry both.** The
-split `variant_data` row key is `(locus, [REF, ALT])` in the VDS's own order,
-which is *not* sorted, so `_key_weights_by_variant` emits each weights row
-**twice** — `[effect, noneffect]` and `[noneffect, effect]` — and exactly one
-can match. Canonicalizing the weights key with `hl.sorted` instead looks
-equivalent and is not: it only matches variants whose REF sorts before its ALT,
-so a `G/A` SNP (weights `[A,G]`, VDS `[G,A]`) never joins and is dropped as
-though absent from the callset. That shipped, and cost ~half of every real
-score (922 of 1,940 variants for PGS000746), biased toward REF=A and REF=C, with
-no error and a perfectly plausible float. Every integration fixture happened to
-have REF < ALT, so the whole suite stayed green; `chr1:8000` (`G/A`) exists
-solely to close that hole. Do not "simplify" this back to a sorted key.
+**The join is by locus, then alleles locally — never a re-key.** The split
+`variant_data` is keyed by `(locus, alleles)` in the VDS's own — possibly
+non-minimal — representation, while a GWAS names variants minimally. Matching on
+the full row key would therefore mean rewriting the VDS alleles to minimal form,
+i.e. `key_rows_by`, which **shuffles the whole chunk's entries**. Instead
+`_group_weights_by_locus` groups the (small) weights into one array per locus;
+`weights_by_locus[mt.locus]` is a key-*prefix* join against the MT's leading
+key, which hail does with no shuffle; and `_match_weight_at_locus` then picks the
+row whose **unordered allele set** equals the row's minimal `canonical_alleles`
+(annotated by `_split_multi_with_total_dosage`). Only the small weights table
+moves. The set match is orientation-agnostic by construction, so it also handles
+a file that writes the pair either way round.
+
+Two silent-drop bugs are pinned here, both invisible until real data. A `G/A`
+SNP where REF sorts after ALT (`chr1:8000`) broke an earlier `hl.sorted` key
+that only matched REF-before-ALT variants — it cost ~half of every real score
+(922 of 1,940 for PGS000746). A non-minimal biallelic like `AAAG/GAAG`
+(`chr1:8500`), which `split_multi` passes through un-normalized, never matched
+its minimally-named `A/G` weights. The allele-set-on-`canonical_alleles` match
+closes both. Do **not** "simplify" this to a keyed `(locus, alleles)` join: it
+reintroduces one or both drops, or the entry-shuffling re-key.
 
 **The hom-ref offset.** Orientation is resolved per row against the VDS's REF.
 When the effect allele is the REF, the true contribution is `w·(2 − n_non_ref)`,
@@ -175,6 +183,22 @@ which raises. That is deliberate — don't set it to `True` to silence an error.
 would *move* the locus, and hail can then only raise or silently drop the allele.
 No such variant exists in AoU (0 of 6,001,424 ALTs measured), so the exception is
 a tripwire for a future VDS release, not a crash risk.
+
+**`split_multi` only min_reps the rows it actually splits**, which is why
+`_split_multi_with_total_dosage` annotates a `canonical_alleles` row field (the
+`min_rep` of every row) for the join above to match on. An already-biallelic row
+is passed through with its *original* alleles, so without this a non-minimal
+biallelic variant — `AAAG/GAAG`, an A→G SNP a GWAS names `A/G` — keeps
+`AAAG/GAAG` and never joins the minimally-named weights, scoring 0 with no error.
+`min_rep` is idempotent on the rows split_multi already reduced, so annotating
+every row only changes the passthroughs, and it is annotate-not-re-key precisely
+so the entry data never shuffles. The locus-shift tripwire (`or_error` if
+`min_rep` moves the locus) is carried onto these passthrough rows too, which
+`filter_changed_loci` does not cover. The multi-allelic non-minimal case is
+normalized as a *side effect* of splitting and so hid this for a long time;
+`validate_scoring_on_aou.ipynb` found it on the real VDS (`chr1:1409159
+AAAG/GAAG`) because its non-minimal fixture is biallelic where
+`tests/integration/`'s was only multi-allelic. Both shapes are now pinned.
 
 `_utils.py:_stage_local_file_to_gcs` copies local paths into
 `$WORKSPACE_BUCKET/data/...` because Hail's Spark cluster can't read the local
