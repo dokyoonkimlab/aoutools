@@ -63,6 +63,14 @@ VARIANTS = [
     # homozygous-reference, so a dosage taken from the downcoded GT would credit
     # S2 with TWO copies of A when it carries NONE.
     ("chr1:7000", ["A", "C", "G"], {"S2": [1, 1], "S3": [0, 2]}),
+    # REF sorts AFTER ALT ('G' > 'A'). Every variant above happens to have
+    # REF < ALT, which is what let a join keyed on the *sorted* allele pair --
+    # against a VDS row key that is NOT sorted -- pass the whole suite while
+    # silently dropping ~half of a real weights file. Nothing else here is
+    # sensitive to allele order, so this locus is the only thing standing
+    # between that bug and a green run. Genotypes mirror chr1:1000 exactly, so
+    # the two must score identically under either orientation.
+    ("chr1:8000", ["G", "A"], {"S2": [0, 1], "S3": [1, 1]}),
 ]
 
 # Every weight is 1.0, so `prs` is literally the summed count of effect-allele

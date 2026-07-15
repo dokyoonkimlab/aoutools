@@ -16,12 +16,19 @@ The mock VDS (weights effect allele in brackets):
   chr1:5000   C / G,T            C/C  C/G  C/T  C/C      [T] / C
   chr1:6000   AGGGC / A,GGGGC    -/-  -/G  G/G  -/-      [G] / A   min_rep'd
   chr1:7000   A / C,G            A/A  C/C  A/G  A/A      [A] / G
+  chr1:8000   G / A              G/G  G/A  A/A  G/G      both      REF > ALT
 
 S1 is homozygous reference at every site, so it has no entry in `variant_data`
 at all. S4 has an entry at chr1:2000 whose genotype is missing -- a no-call.
 
+chr1:8000 is the only site whose REF does not sort before its ALT. That is not
+cosmetic: the weights join is keyed on alleles, and every other row here would
+join just as well with the two sides keyed inconsistently. See
+`test_a_variant_whose_ref_sorts_after_its_alt_scores`.
+
 There is one scoring path: multi-allelics are split, the weights are joined on
-(locus, sorted allele pair), and each matched row is oriented against the VDS's
+(locus, allele pair) -- emitted in both orders, so the VDS's own REF/ALT order
+is what the key matches -- and each matched row is oriented against the VDS's
 own REF/ALT. A REF-effect row contributes `-w * n_non_ref` per entry plus a
 row-level `2w` offset applied to every sample -- the only way to reach a hom-ref
 sample, which has no entry at all.
@@ -93,9 +100,13 @@ def test_hom_ref_samples_are_absent_from_the_entry_stream(vds_lgt):
     visited = vd.select_cols(n=hl.agg.count()).cols().to_pandas()
     per_sample = dict(zip(visited["s"], visited["n"], strict=True))
 
+    # Taken from the VDS, not hardcoded: adding a fixture variant must not
+    # silently turn this into an assertion about the wrong number of sites.
+    n_sites = vd.count_rows()
+
     assert per_sample["S1"] == 0, "hom-ref sample must not be visited at all"
-    assert per_sample["S2"] == 7  # a call at every one of the seven sites
-    assert per_sample["S3"] == 7
+    assert per_sample["S2"] == n_sites  # a call at every site
+    assert per_sample["S3"] == n_sites
     assert per_sample["S4"] == 1  # the no-call entry at chr1:2000 exists
 
 
@@ -246,6 +257,60 @@ def test_ref_effect_when_a_sample_is_homozygous_for_another_alt(vds_lgt):
     )
     assert prs["S3"] == 1.0  # A/G
     assert prs["S4"] == 2.0  # A/A, no entry
+
+
+@pytest.mark.parametrize(
+    ("effect", "noneffect", "expected"),
+    [
+        # Effect allele is the ALT ('A'): copies of A are 0, 1, 2, 0.
+        ("A", "G", {"S1": 0.0, "S2": 1.0, "S3": 2.0, "S4": 0.0}),
+        # Effect allele is the REF ('G'): copies of G are 2, 1, 0, 2. This one
+        # also needs the hom-ref offset, so it fails differently if the join is
+        # right but the orientation is read off the wrong allele.
+        ("G", "A", {"S1": 2.0, "S2": 1.0, "S3": 0.0, "S4": 2.0}),
+    ],
+)
+def test_a_variant_whose_ref_sorts_after_its_alt_scores(
+    vds_lgt, effect, noneffect, expected
+):
+    """CORRECT, and the regression guard for a silent half-the-file dropout.
+
+    chr1:8000 is `G / A`: its REF sorts **after** its ALT. Every other variant
+    in the mock VDS has REF < ALT, and that accident hid a real bug for the
+    whole life of the suite.
+
+    The weights used to be keyed on the *sorted* allele pair (`[A, G]`), but
+    the split `variant_data` row key is `(locus, [REF, ALT])` in the VDS's own
+    order (`[G, A]`). The two never met. The variant simply did not join, and a
+    weights row that does not join is indistinguishable from one whose variant
+    is absent from the callset: no error, no warning, a finite score.
+
+    On a real PGS this dropped ~half of every file -- 922 of 1,940 variants for
+    PGS000746 against the All of Us VDS -- and biased what survived toward
+    REF=A and REF=C. Both orientations are checked here because the fix
+    duplicates the weights row rather than sorting the VDS key, and getting
+    that backwards would repair the join while breaking `alleles[0] == REF`,
+    which is what `_orient_weight_and_offset` reads.
+
+    Genotypes are identical to chr1:1000, so the expectations are the same copy
+    counts, just written against the mirrored allele order.
+    """
+    raw = hl.Table.parallelize(
+        [{"chr": "chr1", "pos": 8000, "effect_allele": effect,
+          "noneffect_allele": noneffect, "weight": 1.0}],
+        hl.tstruct(
+            chr=hl.tstr, pos=hl.tint32, effect_allele=hl.tstr,
+            noneffect_allele=hl.tstr, weight=hl.tfloat64,
+        ),
+    )  # fmt: skip
+    prs, n_matched = score(vds_lgt, raw)
+
+    assert n_matched == 1, (
+        f"the G/A variant at chr1:8000 did not join at all (effect={effect}). "
+        "Its REF sorts after its ALT -- if the weights key is sorted but the "
+        "VDS row key is not, this variant silently vanishes from the score."
+    )
+    assert prs == expected
 
 
 def test_alt_effect_is_unaffected_by_another_alt(vds_lgt):

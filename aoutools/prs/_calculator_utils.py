@@ -137,19 +137,41 @@ def _validate_and_prepare_weights_table(
 
 def _key_weights_by_variant(ht: hl.Table) -> hl.Table:
     """
-    Keys a weights table by (locus, canonical allele pair) for the join.
+    Keys a weights table by (locus, allele pair) for the join, both ways round.
 
-    The key is the *unordered* allele pair -- `hl.sorted` canonicalizes it --
-    so a weights row joins its variant whichever way round the effect allele
-    happens to be written. Orientation is then read per row off the VDS itself
-    (see `_orient_weight_and_offset`), not declared globally for the whole file.
+    The join target is the row key of the split `variant_data`, which is
+    `(locus, [REF, ALT])` in the **VDS's own order**. A weights file names its
+    alleles in whatever order it likes, so to match a weights row whichever way
+    round it is written, each one is emitted **twice** -- once as
+    `[effect, noneffect]` and once as `[noneffect, effect]`. Exactly one of the
+    two can equal `[REF, ALT]`, so a variant still matches at most once.
 
-    That matters because orientation is a per-row property. The PGS Catalog
-    does not harmonize the effect allele onto the ALT: its spec says the effect
-    allele "does not necessarily need to correspond to the minor
-    allele/alternative allele", and harmonized (HmPOS) files remap coordinates
-    while preserving the original allele columns. A single file routinely
-    carries both orientations.
+    Canonicalizing with `hl.sorted` instead does not work, and failing that way
+    is silent: the VDS side is not sorted, so a sorted weights key matches only
+    the variants whose REF happens to sort before their ALT. A `G/A` SNP is
+    keyed `[A, G]` by the weights and `[G, A]` by the VDS, never joins, and
+    drops out of the score as though it were absent from the VDS -- taking
+    roughly half of a real weights file with it, biased toward REF=A and REF=C.
+    Every score stays finite and plausible. `tests/integration/
+    test_allele_matching.py::test_a_variant_whose_ref_sorts_after_its_alt_scores`
+    pins it; every fixture predating that test happened to have REF < ALT.
+
+    Duplicating the row cannot double-count a variant: the two copies differ in
+    the `alleles` key, so at most one of them equals `[REF, ALT]`. The one case
+    where they would *not* differ is a degenerate row naming the same allele
+    twice (`A`/`A`) -- which no VDS row can match anyway, since REF != ALT --
+    so those are dropped here rather than left to collide in the key.
+
+    Orientation is read per row off the VDS (see `_orient_weight_and_offset`),
+    not declared globally for the file -- `alleles[0]` is the true REF either
+    way, which is why the *weights* are duplicated rather than the VDS re-keyed
+    on a sorted pair. That would fix the join and break orientation.
+
+    That orientation is per-row matters because the PGS Catalog does not
+    harmonize the effect allele onto the ALT: its spec says the effect allele
+    "does not necessarily need to correspond to the minor allele/alternative
+    allele", and harmonized (HmPOS) files remap coordinates while preserving
+    the original allele columns. A single file routinely carries both.
 
     The locus alone is not enough of a key: a weights file may name more than
     one variant at a position, and a locus-only lookup would arbitrarily pick
@@ -166,12 +188,13 @@ def _key_weights_by_variant(ht: hl.Table) -> hl.Table:
     Returns
     -------
     hail.Table
-        A table keyed by 'locus' and 'alleles', where 'alleles' is the sorted
-        pair. Weights are left untouched.
+        A table keyed by 'locus' and 'alleles', with two rows per input row --
+        one per allele order. Weights are left untouched.
     """
-    return ht.annotate(
-        alleles=hl.sorted([ht.effect_allele, ht.noneffect_allele])
-    ).key_by("locus", "alleles")
+    ht = ht.filter(ht.effect_allele != ht.noneffect_allele)
+    forward = ht.annotate(alleles=[ht.effect_allele, ht.noneffect_allele])
+    reverse = ht.annotate(alleles=[ht.noneffect_allele, ht.effect_allele])
+    return forward.union(reverse).key_by("locus", "alleles")
 
 
 def _split_multi_with_total_dosage(

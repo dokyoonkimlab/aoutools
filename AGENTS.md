@@ -127,8 +127,21 @@ weights table is chunked into `chunk_size` variants; each chunk builds 1bp
 intervals for `hl.vds.filter_intervals` so only relevant loci are read, computes
 its PRS, and results are summed across chunks. There is **one** scoring path:
 `hl.vds.split_multi` splits multi-allelic sites, and the weights are joined on
-(locus, **sorted** allele pair) — so the join key *is* the allele check, and it
-matches either orientation. Shared helpers live in `_calculator_utils.py`.
+(locus, allele pair) — so the join key *is* the allele check. Shared helpers
+live in `_calculator_utils.py`.
+
+**The join key is the VDS's allele order, and the weights carry both.** The
+split `variant_data` row key is `(locus, [REF, ALT])` in the VDS's own order,
+which is *not* sorted, so `_key_weights_by_variant` emits each weights row
+**twice** — `[effect, noneffect]` and `[noneffect, effect]` — and exactly one
+can match. Canonicalizing the weights key with `hl.sorted` instead looks
+equivalent and is not: it only matches variants whose REF sorts before its ALT,
+so a `G/A` SNP (weights `[A,G]`, VDS `[G,A]`) never joins and is dropped as
+though absent from the callset. That shipped, and cost ~half of every real
+score (922 of 1,940 variants for PGS000746), biased toward REF=A and REF=C, with
+no error and a perfectly plausible float. Every integration fixture happened to
+have REF < ALT, so the whole suite stayed green; `chr1:8000` (`G/A`) exists
+solely to close that hole. Do not "simplify" this back to a sorted key.
 
 **The hom-ref offset.** Orientation is resolved per row against the VDS's REF.
 When the effect allele is the REF, the true contribution is `w·(2 − n_non_ref)`,

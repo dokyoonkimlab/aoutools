@@ -109,41 +109,75 @@ class TestKeyWeightsByVariant:
     """
     Tests for `_key_weights_by_variant`, which builds the join key.
 
-    The key is the *unordered* allele pair, so a weights row matches its variant
-    whichever way round the effect allele is written. Keying on the ordered pair
-    -- as the old `ref_is_effect_allele` code did -- silently drops every row of
+    A weights row must match its variant whichever way round the file writes
+    the alleles, so each row is emitted **twice** -- once per allele order --
+    and the join key is the ordered pair. Keying on the ordered pair *once* --
+    as the old `ref_is_effect_allele` code did -- silently drops every row of
     the opposite orientation. Keying on the locus alone would instead match the
     wrong variant when a file names two variants at one position.
+
+    Canonicalizing with `hl.sorted` instead of duplicating looks equivalent and
+    is not: the join target is the split `variant_data` row key, `(locus,
+    [REF, ALT])`, which is **not** sorted. A sorted weights key therefore only
+    ever matches variants whose REF happens to sort before their ALT -- about
+    half a real file -- and the rest vanish with no error. See
+    `tests/integration/test_allele_matching.py`
+    `::test_a_variant_whose_ref_sorts_after_its_alt_scores`, which catches it
+    on real genotypes; these tests only pin the shape of the key.
     """
 
-    def test_keys_by_locus_and_the_sorted_allele_pair(self, mocker):
+    def _key(self, mocker):
         mock_hl = mocker.patch("aoutools.prs._calculator_utils.hl", MagicMock())
         mock_table = MagicMock()
+        mock_table.filter.return_value = mock_table
         mock_table.annotate.return_value = mock_table
+        mock_table.union.return_value = mock_table
         mock_table.key_by.return_value = mock_table
-
         _key_weights_by_variant(mock_table)
+        return mock_hl, mock_table
 
-        # The pair is canonicalized, not laid out as [ref, alt].
-        mock_hl.sorted.assert_called_once_with(
-            [mock_table.effect_allele, mock_table.noneffect_allele]
+    def test_emits_both_allele_orders_and_keys_on_the_ordered_pair(
+        self, mocker
+    ):
+        mock_hl, mock_table = self._key(mocker)
+
+        effect, noneffect = (
+            mock_table.effect_allele,
+            mock_table.noneffect_allele,
         )
-        kwargs = mock_table.annotate.call_args.kwargs
-        assert kwargs["alleles"] is mock_hl.sorted.return_value
+        orders = [
+            call.kwargs["alleles"]
+            for call in mock_table.annotate.call_args_list
+        ]
+        assert orders == [[effect, noneffect], [noneffect, effect]], (
+            "both allele orders must be emitted, or a variant whose REF sorts "
+            "after its ALT never joins"
+        )
+        mock_table.union.assert_called_once_with(mock_table)
         mock_table.key_by.assert_called_once_with("locus", "alleles")
+
+    def test_does_not_canonicalize_with_sorted(self, mocker):
+        """Regression guard. A sorted key joins against an unsorted VDS row key
+        and silently drops every variant whose REF sorts after its ALT."""
+        mock_hl, _ = self._key(mocker)
+
+        mock_hl.sorted.assert_not_called()
+
+    def test_drops_a_row_naming_the_same_allele_twice(self, mocker):
+        """`A`/`A` would produce two identical keys, and no VDS row can match
+        it anyway -- REF and ALT always differ."""
+        _, mock_table = self._key(mocker)
+
+        mock_table.filter.assert_called_once()
 
     def test_does_not_touch_the_weight(self, mocker):
         """Orientation is resolved later, per row, against the VDS's own REF.
         The weight must arrive at that point unmodified -- negating it here, as
         the old code did, would double-negate."""
-        mocker.patch("aoutools.prs._calculator_utils.hl", MagicMock())
-        mock_table = MagicMock()
-        mock_table.annotate.return_value = mock_table
-        mock_table.key_by.return_value = mock_table
+        _, mock_table = self._key(mocker)
 
-        _key_weights_by_variant(mock_table)
-
-        assert "weight" not in mock_table.annotate.call_args.kwargs
+        for call in mock_table.annotate.call_args_list:
+            assert "weight" not in call.kwargs
 
 
 class TestOrientWeightAndOffset:
