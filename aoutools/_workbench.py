@@ -449,8 +449,8 @@ def init_hail(reference: str = "GRCh38", **kwargs) -> None:
     Calling this off the Workbench, where no project can be found, is fine: the
     requester-pays setting is simply omitted, with a warning.
 
-    This function is idempotent by default, so re-running the cell that calls it
-    will not raise.
+    By default this function is safe to run more than once: re-running the cell
+    that calls it will not raise an error.
 
     Parameters
     ----------

@@ -236,7 +236,7 @@ def download_pgs(
     pgp: Iterable[str] | str | None = None,
     build: str | None = "GRCh38",
     efo_include_children: bool = True,
-    overwrite_existing_file: bool = False,
+    overwrite_existing_file: bool = True,
     user_agent: str | None = None,
     verbose: bool = False,
 ) -> None:
@@ -260,14 +260,16 @@ def download_pgs(
         Genome build ("GRCh37" or "GRCh38"), default "GRCh38".
     efo_include_children : bool, default True
         Whether to include descendant EFO terms.
-    overwrite_existing_file : bool, default False
+    overwrite_existing_file : bool, default True
         Re-download a scoring file that is already present in `outdir`.
 
-        When False (the default), a file that already exists is an **error**,
-        and because the downloads run concurrently it aborts the whole batch --
-        not just the score whose file was present. Re-running a cell that
-        downloaded successfully once will therefore fail. Pass True to make the
-        call idempotent.
+        With the default (True), re-running a cell that already downloaded its
+        files simply fetches them again and replaces them. This is safe: the
+        file for a given PGS Catalog ID never changes, so the new copy is
+        identical to the old one. Pass False to make an already-present file an
+        **error** instead -- but note that because the downloads run
+        concurrently, that error aborts the whole batch, not just the score
+        whose file was present.
     user_agent : str, optional
         Custom user agent string.
     verbose : bool, default False
