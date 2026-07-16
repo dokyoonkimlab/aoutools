@@ -203,11 +203,54 @@ Pinned by `test_ref_effect_at_a_multiallelic_site`,
 
 ---
 
+## ~~Finding 7~~ — the join key dropped variants two different ways
+
+**Fixed.** Both were silent — a clean float, a low `n_matched`, no error. Both
+were live on `dev` after Task 2, shipped in no release, and are now pinned in
+`tests/integration/`.
+
+Task 2 keyed the weights on `(locus, hl.sorted([effect, noneffect]))` and joined
+against the split `variant_data` row key `(locus, [REF, ALT])`. Two problems:
+
+1. **Allele order.** The VDS row key is *not* sorted, so the sorted weights key
+   only met a variant when `REF < ALT`. A `G/A` SNP whose REF sorts after its ALT
+   never joined — indistinguishable from a variant absent from the callset. On
+   PGS000746 against the real AoU VDS this dropped **922 of 1,940** variants and
+   biased the survivors toward `REF ∈ {A, C}`.
+2. **Non-minimal representation.** `hl.vds.split_multi` only `min_rep`s the rows
+   it *splits*; an already-biallelic row passes through with its original alleles.
+   So `AAAG/GAAG` — how the real VDS stores an `A/G` SNP (chr1:1409159) — kept its
+   non-minimal alleles and never matched the minimally-named weight. `chr1:6000`
+   (multi-allelic, Finding 5) was normalized for free by the split; the biallelic
+   passthrough was not.
+
+**The fix — one shuffle-free join.** `_split_multi_with_total_dosage` annotates
+every row with `canonical_alleles` (the `min_rep` of its alleles; idempotent on
+rows `split_multi` already reduced, so it only changes the biallelic
+passthroughs). `_group_weights_by_locus` groups the weights by **locus alone**,
+and `_match_weight_at_locus` matches on the **unordered allele set** against
+`canonical_alleles`. Keying on locus alone keeps this a key-*prefix* join (no
+shuffle); an ordered- or minimal-allele key would force a `key_rows_by` that
+shuffles every entry. The set compare is orientation-agnostic, closing (1); the
+`canonical_alleles` annotation closes (2). The same `filter_changed_loci`-style
+tripwire guards the passthrough annotation (`or_error` on a locus shift), since
+`split_multi`'s own guard does not reach the rows it did not split.
+
+Pinned by `test_a_variant_whose_ref_sorts_after_its_alt_scores` (both
+orientations) and `test_normalizes_a_non_minimal_biallelic_variant`.
+
+---
+
 ## How scoring behaves today
 
 One path, no allele-handling config at all. `hl.vds.split_multi` splits
-multi-allelic sites, the weights are joined on `(locus, **sorted** allele pair)` —
-so the join key *is* the allele check, and it matches either orientation.
+multi-allelic sites, then the weights are matched to each row **shuffle-free**:
+`_group_weights_by_locus` groups them into one array per locus, the key-prefix
+join `weights_by_locus[mt.locus]` reads that array with no shuffle, and
+`_match_weight_at_locus` picks the row whose **unordered allele set** equals the
+row's `canonical_alleles` (its `min_rep`). So the match survives both mismatches
+between weights and VDS — allele order and non-minimal representation — with no
+re-key of the MatrixTable. See Finding 7 for the two silent drops this replaced.
 
 **Two different dosages**, because splitting downcodes (Finding 6):
 `GT.n_alt_alleles()` counts copies of *this row's* ALT; `n_non_ref` counts *all*
@@ -270,7 +313,10 @@ VDS's own REF/ALT:
 1. `_key_weights_by_variant` keys the weights on `(locus, hl.sorted([effect,
    noneffect]))`. Sorting canonicalizes the pair, so a row matches its variant
    whichever way round it is written; keeping the alleles in the key preserves
-   variant identity *and* disambiguates a file that names two variants at one locus.
+   variant identity *and* disambiguates a file that names two variants at one
+   locus. **(Later replaced — the sorted key silently dropped every `REF > ALT`
+   variant, ~half of a real file; see Finding 7 for the shuffle-free join that
+   supersedes this step.)**
 2. `_orient_weight_and_offset` returns `(weight_per_alt_copy, hom_ref_offset)` —
    `(+w, 0)` when the effect allele is the ALT, `(−w, 2w)` when it is the REF.
 3. `prs = agg.sum(contribution) + agg_rows.sum(hom_ref_offset)`.
@@ -314,7 +360,7 @@ could break — which is the other reason the raising default stays armed.
 
 ## Workbench validation notebooks (done)
 
-Two notebooks close the holes the offline tiers cannot reach. **CI does not run
+These notebooks close the holes the offline tiers cannot reach. **CI does not run
 them** — a human runs them on the Workbench before a release.
 
 - `notebooks/validate_scoring_on_aou.ipynb` — the real-data counterpart of
@@ -326,6 +372,15 @@ them** — a human runs them on the Workbench before a release.
   `calculate_prs_batch`, and `calculate_pgs` all hard-raise without a `gs://`
   output path, so no offline test reaches them, nor the PGS download, nor
   `_stage_local_file_to_gcs`. This is the only check on any of it.
+- `notebooks/validate_synthetic_control_on_aou.ipynb` — the **positive-control**
+  tier. **Builds** a synthetic VDS in which every scoring path is present by
+  construction, computes the expected PRS independently (pure Python, cross-
+  checked against a `to_dense_mt` oracle), and drives the **public API** against
+  that known answer — so it checks the user-facing functions and the `gs://`
+  round-trip, which the real-PGS notebook cannot verify against ground truth.
+- `notebooks/measure_minrep_locus_shift.ipynb` — the measurement behind
+  Finding 5: locus-shift rate is **0 of 6,001,424 ALTs** in AoU. Re-run it if the
+  split-step tripwire ever fires on a future VDS release.
 
 `aoutools.init_hail()` / `get_vds_path()` (`_workbench.py`) hold the Workbench
 boilerplate: requester-pays billing, the reference genome set *after* `hl.init`
@@ -352,6 +407,11 @@ names a specific AoU data release and must be bumped when a new one lands.**
     carrying a *different* ALT were over-credited by up to `2w` **each**. Per-sample
     and genotype-dependent, so this **reordered the cohort** too. It shipped in no
     release, but it was live on `dev` after Task 2.
+  - **Finding 7 — the sorted join key**: every `REF > ALT` variant and every
+    non-minimal biallelic variant was silently *dropped* (922 of 1,940 for
+    PGS000746), so scores were computed from a biased subset. Also dev-only, live
+    after Task 2. Not a concern for released numbers, but noted so the dev-only
+    regressions are recorded in one place.
 
   The "rankings were wrong" bullets are the difference between *your numbers moved*
   and *your result was wrong*. Say it plainly, do not soften it. Three config knobs
