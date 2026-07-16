@@ -28,11 +28,17 @@ repos:
         name: ruff format
         entry: pixi run -e lint ruff format --force-exclude
         language: system
-        types_or: [python, pyi]
+        # `jupyter` includes .ipynb: ruff lints notebook code cells, and CI
+        # (`ruff check .`) does too, so pre-commit must, or the two disagree
+        # and a notebook lands lint-clean locally but red in CI.
+        types_or: [python, pyi, jupyter]
         require_serial: true
       - id: ruff-check
         name: ruff lint (autofix)
         entry: pixi run -e lint ruff check --fix --force-exclude
         language: system
-        types_or: [python, pyi]
+        # `jupyter` includes .ipynb: ruff lints notebook code cells, and CI
+        # (`ruff check .`) does too, so pre-commit must, or the two disagree
+        # and a notebook lands lint-clean locally but red in CI.
+        types_or: [python, pyi, jupyter]
         require_serial: true
