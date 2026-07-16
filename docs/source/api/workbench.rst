@@ -4,10 +4,11 @@ aoutools (workbench)
 ====================
 
 Helpers for setting up a Hail session on the *All of Us* Researcher Workbench.
-Neither is required to use the rest of the library -- they exist so that the
-Workbench-specific boilerplate (requester-pays billing, the reference genome,
-and the location of the VariantDataset) lives in one place rather than being
-copied into every notebook.
+None of these is required to use the rest of the library -- they exist so that
+the Workbench-specific boilerplate (requester-pays billing, the reference
+genome, the Google billing project, and the locations of the VariantDataset and
+the workspace bucket) lives in one place rather than being copied into every
+notebook.
 
 .. note::
 

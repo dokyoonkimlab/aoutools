@@ -170,8 +170,8 @@ Trap 3: Sites with more than one alternate allele
 
 At some positions the population carries more than one alternate. Say the
 reference is ``C`` and both ``G`` and ``T`` occur: this is a **multi-allelic**
-site. About one in five *All of Us* variants is multi-allelic, so it is not a
-corner case.
+site. A substantial fraction of *All of Us* variants are multi-allelic, so it is
+not a corner case.
 
 ``aoutools`` first **splits** such a site into separate two-allele rows, one per
 alternate. A ``C/G,T`` site becomes a ``C/G`` row and a ``C/T`` row, so each
