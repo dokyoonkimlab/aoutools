@@ -32,6 +32,12 @@ of Us data analyses more accessible. The initial release focuses on the
 
 .. toctree::
    :maxdepth: 2
+   :caption: Understanding
+
+   scoring_method
+
+.. toctree::
+   :maxdepth: 2
    :caption: Reference
 
    api/index

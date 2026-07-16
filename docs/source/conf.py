@@ -45,6 +45,7 @@ extensions = [
     "sphinx.ext.napoleon",  # Understands Google-style docstrings.
     "sphinx_autodoc_typehints",  # Renders type hints nicely.
     "sphinx.ext.viewcode",  # Adds links to your source code.
+    "sphinx.ext.mathjax",  # Renders .. math:: and :math:` via MathJax.
 ]
 
 templates_path = ["_templates"]
