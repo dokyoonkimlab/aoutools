@@ -28,5 +28,7 @@ copied into every notebook.
 
 .. autofunction:: aoutools.get_workspace_bucket
 
+.. autofunction:: aoutools.get_google_project
+
 .. autodata:: aoutools.DEFAULT_VDS_PATH
    :annotation:

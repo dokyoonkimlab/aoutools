@@ -346,8 +346,10 @@ def _process_chunks_batch(
             )
 
             # Filter the full weights table via semi-join to retain only the
-            # current chunk's weights. semi_join preserves split variants at
-            # the same locus when split_multi=True.
+            # current chunk's loci. Both sides are keyed on locus -- the
+            # weights are grouped one row per locus by
+            # _group_weights_by_locus -- so a matched locus keeps its whole
+            # variants array.
             chunked_prepared_weights = {
                 score_name: table.semi_join(loci_chunk)
                 for score_name, table in prepared_weights.items()
