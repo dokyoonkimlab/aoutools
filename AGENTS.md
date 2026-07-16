@@ -80,10 +80,10 @@ human runs these on a Hail Genomic Analysis environment before a release.
   round-trip on a *known answer*, which `validate_public_api_on_aou.ipynb` (real
   PGS files, no ground truth) cannot. Ships a diagnostic toolkit that decomposes
   a discrepancy per variant and classifies its signature (constant offset /
-  genotype-dependent / whole-variant drop / no-call) onto the matching `TODO.md`
-  finding. Because its data is synthetic real-hail (not the real VDS), every cell
-  except the `gs://` public-API ones runs offline under `pixi run -e integration`
-  too — the same tier `tests/integration/` uses.
+  hom-ref-only / genotype-dependent / whole-variant drop) onto the matching
+  `TODO.md` finding. Because its data is synthetic real-hail (not the real
+  VDS), every cell except the `gs://` public-API ones runs offline under
+  `pixi run -e integration` too — the same tier `tests/integration/` uses.
 - `measure_minrep_locus_shift.ipynb` — records why Finding 5 is closed (locus-
   shift rate is zero in AoU); re-run it if the tripwire below ever fires.
 
