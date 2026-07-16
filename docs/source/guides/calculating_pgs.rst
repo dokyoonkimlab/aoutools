@@ -34,19 +34,22 @@ Catalog and calculate them for all samples in your VDS.
 
 .. code-block:: python
 
-    import os
     import pandas as pd
     import hail as hl
+
+    # Workbench session helpers
+    from aoutools import init_hail, get_vds_path, get_workspace_bucket
 
     # Import the workflow function
     from aoutools.prs import calculate_pgs
 
-    # Initiate Hail and get bucket path
-    hl.default_reference(new_default_reference="GRCh38")
-    bucket = os.getenv("WORKSPACE_BUCKET")
+    # Initialize Hail (requester-pays billing and the GRCh38 reference) and
+    # resolve the workspace bucket
+    init_hail()
+    bucket = get_workspace_bucket()
 
-    # Load the VDS
-    vds = hl.vds.read_vds(os.getenv("WGS_VDS_PATH"))
+    # Load the All of Us WGS VariantDataset
+    vds = hl.vds.read_vds(get_vds_path())
 
     # Define the PGS IDs to calculate
     pgs_ids_to_calculate = ("PGS000196", "PGS000771")

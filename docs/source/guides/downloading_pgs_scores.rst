@@ -8,7 +8,7 @@ How It Works
 ------------
 
 The ``download_pgs`` function is designed to resolve a specific dependency
-conflict the can arise in the All of Us Researcher Workbench.
+conflict that can arise in the All of Us Researcher Workbench.
 
 The core issue is a version mismatch between two important libraries:
 ``dsub``, which is used for job scheduling, and ``pgscatalog.core``, which is

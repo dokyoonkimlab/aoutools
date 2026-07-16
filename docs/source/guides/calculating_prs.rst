@@ -7,15 +7,17 @@ using the **aoutools.prs** submodule.
 
 .. note::
 
-   To get started, you’ll need a Dataproc cluster set up for Hail Genomic
-   Analysis. A good starting point is a master node with 8 CPUs, 52 GB RAM, and
-   300 GB storage, plus 50 preemptible workers with 4 CPUs, 15 GB RAM, and 300
-   GB storage each. This setup costs around $6 per hour and is enough to handle
-   PRS weights from about 1 million variants. The setting was tested on Whole
-   Genome Sequencing (WGS) data from the All of Us V8 release, using all
-   available samples and without any variant or sample filtering. If you plan to
-   run batch calculations with several large-scale weight files, you need a more
-   powerful setup.
+   To get started, you’ll need a cluster configured for Hail Genomic Analysis.
+   A reasonable starting point is an ``n2-standard-8`` (or larger) main node
+   together with 30 secondary workers running as Spot VMs, each keeping the
+   default 500 GB disk. This handles PRS weights from about 1 million variants
+   across all available All of Us WGS samples, with no variant or sample
+   filtering. Spot VMs keep the cost down but can be reclaimed by the platform
+   at any time; for a run that finishes in a couple of minutes, the chance of an
+   interruption is low. Exact pricing depends on your region and current Spot
+   rates, but this configuration comes to roughly a few US dollars per hour. If
+   you plan to run batch calculations across several large-scale weight files,
+   choose a more powerful setup.
 
 Given the specified workspace configuration, the tutorial requires only 1–2
 minutes for both single and batch PRS calculations, not including the
@@ -26,16 +28,17 @@ Setup
 
 .. code-block:: python
 
-    import os
     import logging
     from importlib import resources
     import pandas as pd
     import hail as hl
 
+    # Workbench session helpers
+    from aoutools import init_hail, get_vds_path, get_workspace_bucket
+
     # Import functions to calculate PRS
     from aoutools.prs import (
         read_prs_weights,
-        read_prscs,
         calculate_prs,
         calculate_prs_batch,
         PRSConfig
@@ -44,19 +47,20 @@ Setup
     # Set logging level to INFO to view logs and check function correctness.
     logging.basicConfig(level=logging.INFO)
 
-    # Bucket path
-    bucket = os.getenv("WORKSPACE_BUCKET")
+    # Initialize Hail for the Workbench. This wires up requester-pays billing
+    # and sets the GRCh38 reference for you.
+    init_hail()
+
+    # Workspace bucket for output files
+    bucket = get_workspace_bucket()
 
     # Get paths for example data
     data_dir_path = str(resources.files("aoutools.data"))
     prs_weights_header = f"{data_dir_path}/prs_weights_header.csv"
     prs_weights_noheader = f"{data_dir_path}/prs_weights_noheader.tsv"
 
-    # Initiate Hail
-    hl.default_reference(new_default_reference="GRCh38")
-
-    # VDS file
-    vds = hl.vds.read_vds(os.getenv("WGS_VDS_PATH"))
+    # Load the All of Us WGS VariantDataset
+    vds = hl.vds.read_vds(get_vds_path())
 
 
 Step 1: Reading PRS Weights Files
@@ -94,15 +98,13 @@ different file structures.
    However, it is recommended for users to upload the input files to a GCS
    bucket and provide a path that starts with 'gs://'.
 
-**Example 2: Header-less file (like PRScs output)**
+**Example 2: Header-less file**
 
-The `column_map` uses 1-based integer indices instead of names. For convenience,
-you can use the ``read_prscs`` wrapper if your weight file is generated from
-PRScs.
+For a header-less file, the `column_map` uses 1-based integer indices instead of
+names.
 
 .. code-block:: python
 
-    # Using the main function
     column_map_noheader = {
         'chr': 1,
         'pos': 3,
@@ -112,16 +114,10 @@ PRScs.
     }
 
     weights_ht_noheader = read_prs_weights(
-        file_path=prs_weights_noheader
+        file_path=prs_weights_noheader,
         header=False,
         column_map=column_map_noheader,
         delimiter='\t'
-    )
-
-
-    # Using the convenient wrapper for PRS-CS files
-    prscs_ht = read_prscs(
-        file_path=prs_weights_noheader
     )
 
 
@@ -172,7 +168,7 @@ highly recommended as it reads the VDS only once.
 
     # Calculate all scores in a single pass
     prs_batch = calculate_prs_batch(
-        weights_tables_map=weights_map,
+        weights_tables_map=weights_tables_map,
         vds=vds,
         output_path=f"{bucket}/batch_prs.csv"
     )
