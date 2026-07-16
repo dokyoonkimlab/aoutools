@@ -28,11 +28,16 @@ plainly rather than manufacturing findings.
 Read the code before trusting this summary — it is a map, not the territory.
 
 There is **one** scoring path. `_split_multi_with_total_dosage` splits
-multi-allelic sites, then `_key_weights_by_variant` keys the weights on
-`(locus, sorted allele pair)`. Because the join key carries the alleles, the key
-*is* the allele check: a weights row cannot match a variant with different
-alleles. Because the pair is **sorted**, it matches regardless of which side the
-effect allele sits on.
+multi-allelic sites and annotates each row with `canonical_alleles` (its
+`min_rep`), then the weights are matched to each row **shuffle-free**:
+`_group_weights_by_locus` groups the weights into one array per locus, the
+key-prefix join `weights_by_locus[mt.locus]` reads that array with no shuffle,
+and `_match_weight_at_locus` picks the row whose **unordered allele set** equals
+`canonical_alleles`. The set compare is the allele check — a weights row cannot
+match a variant with different alleles — and because the set is unordered it
+matches regardless of which side the effect allele sits on. Matching on
+`canonical_alleles` rather than the row's own key is what lets a non-minimal
+biallelic passthrough (`AAAG/GAAG`, a GWAS's `A/G`) still join.
 
 There are **two dosages**, and they are not interchangeable:
 
@@ -118,7 +123,11 @@ risk scores lowest — while still producing a perfectly plausible distribution.
 the same locus, which is how a GWAS names that SNP
 (`test_normalizes_a_non_minimal_representation`). Trimming a shared **prefix**
 instead **moves** the locus (`[GG, G, GT]` → `G/T` one base downstream), and hail
-will not relocate a row — it can only raise, or silently drop the allele.
+will not relocate a row — it can only raise, or silently drop the allele. The
+`canonical_alleles` annotation runs `min_rep` on **every** row, including the
+biallelic passthroughs `split_multi` never touches, so it carries the same guard:
+an `or_error` that raises if `min_rep` moves the locus. Do not weaken it to a
+silent drop either.
 
 No variant of the prefix-trimming shape exists in All of Us: **0 of 6,001,424 ALT
 alleles** in a 10Mb window, 21% of whose rows were multi-allelic
@@ -147,12 +156,21 @@ library is affordable on the All of Us VDS.
    still produce a perfectly reasonable-looking distribution. Re-read the four
    failure modes above.
 
-2. **Join keys.** The weights must be keyed on `(locus, sorted allele pair)`,
-   matching the post-split MatrixTable. The sort is what lets a row match
-   whichever way round its effect allele is written — an ordered `[ref, alt]` key
-   silently drops every row of the opposite orientation. Keying on locus alone
+2. **The allele match.** The weights are grouped by locus and matched locally on
+   the **unordered allele set** against each row's `canonical_alleles`
+   (`_match_weight_at_locus`) — the set is what lets a row match whichever way
+   round its effect allele is written. An *ordered* `[ref, alt]` compare silently
+   drops every row of the opposite orientation: that was the sorted-pair-key bug
+   (Finding 7), which dropped every `REF > ALT` variant, 922 of 1,940 for
+   PGS000746. But dropping the allele set entirely — matching on locus alone —
    removes the only variant-identity check there is, and picks arbitrarily when a
-   file names two variants at one position.
+   file names two variants at one position. Matching must be on the *minimal*
+   alleles (`canonical_alleles`), not the row's own possibly non-minimal key, or
+   a biallelic passthrough like `AAAG/GAAG` never joins. **The grouping must stay
+   keyed on locus alone** so the join is a shuffle-free key-prefix join; re-keying
+   the MatrixTable to `(locus, minimal alleles)` reintroduces a full shuffle of
+   every entry. Flag any change that sorts the pair, re-keys the MT, or matches on
+   the raw row alleles instead of `canonical_alleles`.
 
 3. **Who gets visited.** A sample absent from `variant_data` is hom-ref and is
    never aggregated over. Any per-sample quantity that should include hom-ref
