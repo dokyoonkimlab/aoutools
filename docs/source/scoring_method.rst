@@ -47,16 +47,19 @@ genotypes, so it is worth setting out first. At each variant position, the peopl
 who match the reference are not written out one by one. They are recorded
 together as a single **reference block**, which says, in effect, "everyone not
 listed here matches the reference." Only the people who carry an alternate allele
-get an individual entry, and that entry lists just the alleles they actually
-have. A person whose genotype could not be determined also gets an entry, marked
-as a **no-call**.
+get an individual entry, listing just the alleles they actually have.
 
 A person's copy count at a variant (the :math:`c` above) is read from their
-entry. Reference-matching people have no entry, so their count is not read but
-inferred: they match the reference, which is 2 reference copies. A no-call person
-does have an entry, but it says "unknown", so they are scored as nothing. Keeping
-those two cases apart is what the whole design turns on, and Traps 2 and 4 below
-are where it matters most.
+entry. The fact the whole design rests on — and the one confirmed on the real
+*All of Us* VDS — is that a reference-matching person has **no entry at all**:
+their count is not read but inferred, and equals 2 reference copies (Trap 2). A
+**no-call** is the case the code must be careful not to confuse with that: a
+genotype that was examined but could not be determined. It is scored as nothing,
+not as a reference match (Trap 4). In the VDS encoding a no-call is stored as a
+present entry whose call is simply missing, the complement of the absent
+reference-matcher. Both facts are confirmed on the real VDS: the
+reference-matcher has no entry yet sits in a reference block, while the no-call
+is a present entry with no reference block.
 
 
 Trap 1: The effect allele can be either the reference or the alternate
