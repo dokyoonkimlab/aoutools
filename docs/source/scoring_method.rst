@@ -39,6 +39,26 @@ where genomic data hides several traps, each able to produce a wrong but
 perfectly plausible number.
 
 
+How the data is stored
+----------------------
+
+Several of the traps below turn on how *All of Us* physically stores the
+genotypes, so it is worth setting out first. At each variant position, the people
+who match the reference are not written out one by one. They are recorded
+together as a single **reference block**, which says, in effect, "everyone not
+listed here matches the reference." Only the people who carry an alternate allele
+get an individual entry, and that entry lists just the alleles they actually
+have. A person whose genotype could not be determined also gets an entry, marked
+as a **no-call**.
+
+A person's copy count at a variant (the :math:`c` above) is read from their
+entry. Reference-matching people have no entry, so their count is not read but
+inferred: they match the reference, which is 2 reference copies. A no-call person
+does have an entry, but it says "unknown", so they are scored as nothing. Keeping
+those two cases apart is what the whole design turns on, and Traps 2 and 4 below
+are where it matters most.
+
+
 Trap 1: The effect allele can be either the reference or the alternate
 ----------------------------------------------------------------------
 
@@ -88,12 +108,9 @@ Trap 2: When the effect allele is the reference, most people are invisible
 
 This is the most important point — and the least obvious.
 
-To store whole-genome data for hundreds of thousands of people affordably, *All
-of Us* uses a **sparse** format. It records an entry for a person at a variant
-only when that person differs from the reference there. Someone who matches the
-reference at a position (homozygous reference, the common case) has no entry at
-all. They are not stored as "0 copies"; they are simply absent, so no per-person
-calculation ever visits them.
+Recall from `How the data is stored`_ that a reference-matching person has no
+entry at a variant. They are not stored as "0 copies"; they are simply absent, so
+no per-person calculation ever visits them.
 
 When the effect allele is the ALT, this is fine: an absent person carries zero
 copies of the ALT, and zero is exactly what they should contribute. When the
@@ -262,6 +279,85 @@ discard the variant. ``aoutools`` chooses to raise a loud error rather than drop
 it silently. No variant of this shape exists in the current *All of Us* data
 (zero out of six million checked), so this is a tripwire for a hypothetical
 future data release — not something you will hit today.
+
+
+A gallery of variant shapes
+---------------------------
+
+The table below pulls the whole page together: a small catalog of variant
+shapes, one per row. Each shows a variant as *All of Us* stores it, the effect
+allele a weight names for it (and whether that allele is the reference or the
+alternate, resolved against the stored variant as in Trap 1), and the scoring
+situation the pair creates. Between them they cover every path the scoring code
+takes.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 12 20 16 52
+
+   * - Locus
+     - Alleles (REF/ALT)
+     - Effect allele
+     - What it exercises
+   * - ``chr1:1000``
+     - ``A/G``
+     - ``G`` (ALT)
+     - The simplest case: a two-allele SNP whose reference base sorts before its
+       alternate. Four people carry ``G``; everyone else is stored as a
+       reference block.
+   * - ``chr1:2000``
+     - ``A/G``
+     - ``A`` (REF)
+     - A reference-effect SNP where one person has a **no-call**. An unknown
+       genotype must score nothing, not two reference copies (Trap 4).
+   * - ``chr1:3000``
+     - ``A/T``
+     - ``A`` (absent)
+     - The data carries ``A/T`` here, but a weight names ``A/G``. That weighted
+       variant is **not in the data at all**, so it must contribute nothing to
+       anyone, not even a reference offset.
+   * - ``chr1:4000``
+     - ``A/T``
+     - ``G`` (absent)
+     - The same missing variant as the row above, but the weight now names the
+       *other* allele as the effect allele. An absent variant must still score
+       nothing whichever way round it is written.
+   * - ``chr1:5000``
+     - ``C/G/T``
+     - ``C`` (REF)
+     - A **multi-allelic** site whose people carry different alternates. After
+       the site is split, a carrier of the alternate the weight did not name
+       must not be miscounted (Trap 3).
+   * - ``chr1:6000``
+     - ``AGGGC/A/GGGGC``
+     - ``G`` (ALT)
+     - A multi-allelic site written non-minimally. Trimming the shared ending
+       turns ``AGGGC/GGGGC`` into a plain ``A/G`` SNP at the same position, so
+       the ``G``-effect weight still matches (Trap 5).
+   * - ``chr1:7000``
+     - ``A/C/G``
+     - ``A`` (REF)
+     - A multi-allelic site where one person is homozygous for ``C``, the
+       alternate the weight did *not* name. This is the worst case for the
+       reference offset: mishandling it credits two copies the person does not
+       carry (Trap 3).
+   * - ``chr1:8000``
+     - ``G/A``
+     - ``A`` (ALT)
+     - A SNP whose reference base sorts *after* its alternate. Order-blind
+       matching is what keeps it from being silently dropped (Traps 1 and 5).
+   * - ``chr1:8500``
+     - ``AAAG/GAAG``
+     - ``G`` (ALT)
+     - A two-allele variant written non-minimally. Because it already has only
+       two alleles, the split step leaves it untouched, so the library has to
+       reduce it to ``A/G`` itself before the ``G``-effect weight matches
+       (Trap 5).
+   * - ``chr1:9000``
+     - ``A/C``
+     - ``C`` (ALT)
+     - A plain SNP carrying a negative, non-integer weight, so the total is real
+       arithmetic rather than a copy count.
 
 
 A note on the weights themselves
