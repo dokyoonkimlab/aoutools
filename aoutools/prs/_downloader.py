@@ -113,12 +113,18 @@ def _get_pgscatalog_version(bin_dir: Path) -> str | None:
     Get the installed pgscatalog.core version from the isolated venv.
 
     Returns None if not installed or if query fails.
+
+    On the first run the package is legitimately absent, so `pip show` exits
+    non-zero and prints "WARNING: Package(s) not found" to stderr. That is the
+    expected trigger to install, not a fault, so stderr is swallowed to keep it
+    off the notebook -- the non-zero exit is still caught below.
     """
     try:
         output = subprocess.check_output(
             [bin_dir / "python", "-m", "pip", "show", "pgscatalog.core"],
             text=True,
             env=_subprocess_env(),
+            stderr=subprocess.DEVNULL,
         )
         for line in output.splitlines():
             if line.startswith("Version:"):

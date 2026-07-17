@@ -76,6 +76,36 @@ class TestSubprocessEnv:
         assert passed_env["PYTHONNOUSERSITE"] == "1"
 
 
+class TestGetPgscatalogVersion:
+    """The version probe runs `pip show` before install, when the package is
+    legitimately absent. `pip show` then prints 'Package(s) not found' to
+    stderr -- expected, but it reads like a fault on every first run, so the
+    probe swallows stderr while still returning None on the non-zero exit."""
+
+    def test_absent_package_returns_none_without_leaking_stderr(self, mocker):
+        check_output = mocker.patch(
+            "aoutools.prs._downloader.subprocess.check_output",
+            side_effect=subprocess.CalledProcessError(
+                returncode=1, cmd=["pip", "show", "pgscatalog.core"]
+            ),
+        )
+
+        result = _downloader._get_pgscatalog_version(Path("/env/bin"))
+
+        assert result is None
+        assert check_output.call_args.kwargs["stderr"] == subprocess.DEVNULL, (
+            "pip's 'not found' stderr must not reach the notebook"
+        )
+
+    def test_parses_the_installed_version(self, mocker):
+        mocker.patch(
+            "aoutools.prs._downloader.subprocess.check_output",
+            return_value="Name: pgscatalog.core\nVersion: 1.0.1\n",
+        )
+
+        assert _downloader._get_pgscatalog_version(Path("/env/bin")) == "1.0.1"
+
+
 class TestRun:
     def test_failure_carries_the_subprocess_stderr(self, mocker):
         """The error text must reach the *exception*, not just the logger.
