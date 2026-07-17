@@ -1,6 +1,7 @@
 """Reader for PRS weights files"""
 
 import logging
+import warnings
 
 import hail as hl
 import hailtop.fs as hfs
@@ -535,10 +536,17 @@ def read_prs_weights(
 
 def read_prscs(file_path: str, **kwargs) -> hl.Table:
     """
-    A simple wrapper to read PRS-CS output files.
+    Read a header-less weights file with the fixed PRS-CS column layout.
 
-    This function assumes a standard PRS-CS output format, which is a
-    header-less, tab-separated file with the following columns:
+    .. deprecated:: 0.1.3
+        The name suggests this reader is tied to the PRS-CS tool, but it only
+        applies one fixed column layout. Call :func:`read_prs_weights` directly
+        with ``header=False`` and the column map shown below. ``read_prscs``
+        will be removed in a future release.
+
+    This function assumes a header-less, tab-separated file with the following
+    columns:
+
     1. Chromosome
     2. Variant ID
     3. Base Position
@@ -553,7 +561,7 @@ def read_prscs(file_path: str, **kwargs) -> hl.Table:
     Parameters
     ----------
     file_path : str
-        A path to the PRS-CS output file.
+        A path to the weights file.
     **kwargs
         Other optional arguments to pass to `read_prs_weights`, such as
         `keep_other_cols` or `validate_alleles`.
@@ -561,9 +569,8 @@ def read_prscs(file_path: str, **kwargs) -> hl.Table:
     Returns
     -------
     hail.Table
-        A processed Hail Table of the PRS-CS weights.
+        A processed Hail Table of the weights.
     """
-    logger.debug("Reading PRS-CS file: %s", file_path)
     prscs_map = {
         "chr": 1,
         "pos": 3,
@@ -571,6 +578,14 @@ def read_prscs(file_path: str, **kwargs) -> hl.Table:
         "noneffect_allele": 5,
         "weight": 6,
     }
+    warnings.warn(
+        "read_prscs is deprecated and will be removed in a future release. "
+        "Call read_prs_weights directly with header=False, "
+        f"column_map={prscs_map}, and delimiter='\\t'.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    logger.debug("Reading PRS-CS file: %s", file_path)
     return read_prs_weights(
         file_path=file_path,
         header=False,

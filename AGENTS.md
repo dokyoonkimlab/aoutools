@@ -154,8 +154,10 @@ is the one exception and is scoped to timing granularity, not a general switch.
 Public API is re-exported from internal `_`-prefixed modules via
 `aoutools/prs/__init__.py`:
 
-- `read_prs_weights`, `read_prscs` (`_reader.py`) — parse weight files (headers
-  optional, custom `column_map`, allele validation) into Hail Tables.
+- `read_prs_weights` (`_reader.py`) — parse weight files (headers optional,
+  custom `column_map`, allele validation) into Hail Tables. `read_prscs` is a
+  **deprecated** thin wrapper (fixed PRS-CS column layout); it warns and defers
+  to `read_prs_weights` — don't build on it.
 - `calculate_prs` (`_calculator.py`) — score one weights table against a VDS.
 - `calculate_prs_batch` (`_calculator_batch.py`) — score many at once, filtering
   the VDS once against the union of all loci.

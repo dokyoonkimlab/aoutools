@@ -14,6 +14,7 @@ from aoutools.prs._reader import (
     _check_duplicated_ids,
     _validate_alleles,
     read_prs_weights,
+    read_prscs,
 )
 
 
@@ -108,6 +109,33 @@ class TestReadPrsWeights:
         }
         with pytest.raises(TypeError, match="must be strs"):
             read_prs_weights("gs://f/f.t", header=True, column_map=bad_map)
+
+
+class TestReadPrscs:
+    """The deprecated PRS-CS wrapper still works, but warns and defers to
+    `read_prs_weights` with the fixed header-less column layout."""
+
+    def test_warns_and_delegates_with_the_prscs_layout(
+        self, mocker, mock_dependencies
+    ):
+        delegate = mocker.patch("aoutools.prs._reader.read_prs_weights")
+
+        with pytest.warns(DeprecationWarning, match="read_prs_weights"):
+            read_prscs("gs://fake/prscs.txt", validate_alleles=True)
+
+        delegate.assert_called_once_with(
+            file_path="gs://fake/prscs.txt",
+            header=False,
+            column_map={
+                "chr": 1,
+                "pos": 3,
+                "effect_allele": 4,
+                "noneffect_allele": 5,
+                "weight": 6,
+            },
+            delimiter="\t",
+            validate_alleles=True,
+        )
 
 
 class TestInternalValidators:
