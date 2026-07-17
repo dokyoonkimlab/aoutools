@@ -44,15 +44,27 @@ direnv allow          # auto-activate it on cd into the repo (once per clone)
 pixi run setup-hooks  # install the ruff pre-commit hooks (once per clone)
 ```
 
-The test suite mocks `hail` but still imports it, so it runs only in the
-linux-64 `ci` environment:
+Tests come in three tiers (see [`tests/README.md`](tests/README.md) and
+[`notebooks/README.md`](notebooks/README.md)):
 
 ```bash
-pixi run -e ci test   # full test suite
+pixi run -e ci test                        # mocked hail; linux-64 only
+pixi run -e integration test-integration   # real hail; macOS or Linux
+```
+
+The mocked tier checks that the code calls the right `hail` methods; the
+integration tier runs real `hail` and asserts actual scores. A third tier —
+the notebooks in `notebooks/` — is run by hand on the Workbench before a release
+to validate against the real *All of Us* data. Changes to scoring logic should
+land with an integration test.
+
+```bash
 pixi run docs         # build the Sphinx HTML docs
 pixi run lint         # ruff lint + format check (what CI runs)
 pixi run format       # auto-fix and format
 ```
+
+Notable changes are recorded in [`CHANGELOG.md`](CHANGELOG.md).
 
 Formatting is enforced by `ruff format`. The bulk-reformat commit is listed in
 `.git-blame-ignore-revs`; to skip it in local blame, run
