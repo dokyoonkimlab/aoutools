@@ -79,9 +79,10 @@ git tag vX.Y.Z
 git push origin vX.Y.Z
 ```
 
-**Note:** `v0.1.2` was published to PyPI on 2026-02-06 but never tagged, so the
-tags currently lag the releases. If you are cutting the next version, offer to
-backfill the missing `v0.1.2` tag on the commit that bumped it.
+**Note:** `v0.1.2` was published to PyPI on 2026-02-06 but originally shipped
+untagged. The tag has since been backfilled locally at `b03c522` (the commit that
+bumped the version); confirm it is pushed to the remote (`git push origin
+v0.1.2`) if the release predates you.
 
 ## 7. Confirm
 
