@@ -32,18 +32,18 @@ def _prepare_batch_weights_data(
     """
     Prepares multiple weights tables for batch PRS calculation.
 
-    This function validates and formats each weights table according to the
-    selected calculation mode (split or non-split). It also builds a union of
-    all unique loci across tables, which will later be used to filter the
-    Variant Dataset (VDS).
+    This function validates and formats each weights table for scoring. It
+    also builds a union of all unique loci across tables, which will later be
+    used to filter the Variant Dataset (VDS).
 
     Parameters
     ----------
     weights_tables_map : dict[str, hl.Table]
         A dictionary mapping score names to Hail tables containing PRS weights.
     config : PRSConfig
-        A configuration object controlling behavior such as whether to split
-        multi-allelic variants.
+        The calculation parameters used to format each weights table -- the
+        weight column (``weight_col_name``) and its optional log transform --
+        plus ``detailed_timings``.
 
     Returns
     -------
@@ -216,9 +216,8 @@ def _calculate_prs_chunk_batch(
         A dictionary of weights tables that have been validated and formatted
         for PRS computation.
     config : PRSConfig
-        A configuration object that controls behavior such as whether to split
-        multi-allelic variants, whether to perform strict allele matching, and
-        whether to include matched variant counts.
+        The calculation parameters. ``include_n_matched`` controls whether the
+        matched-variant counts are also computed here.
 
     Returns
     -------
@@ -317,8 +316,8 @@ def _process_chunks_batch(
         A dictionary of weights tables that have been validated and formatted
         for PRS computation.
     config : PRSConfig
-        A configuration object that controls behavior such as whether to split
-        multi-allelic variants and which sample ID column to use.
+        The calculation parameters, including ``sample_id_col`` (the sample-ID
+        column used in the output).
 
     Returns
     -------

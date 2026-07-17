@@ -240,6 +240,15 @@ def get_workspace_bucket(bucket: str | None = None) -> str:
 
     Notes
     -----
+    Passing ``bucket`` explicitly is the most predictable option: it skips
+    every detection step above -- no environment variable, no Workbench CLI, no
+    mount table -- so the result is exactly the value you give (with a ``gs://``
+    prefix added if missing). Prefer it for a script you want to behave the same
+    on every run. It is only as correct as the value you pass, though, so
+    confirm the bucket exists before a long job writes into it; explicit passing
+    removes the risk of the wrong bucket being *guessed*, not the risk of a
+    typo.
+
     A workspace commonly has **more than one** bucket, and picking the wrong one
     does not fail -- the results simply are not where you think they are. Two in
     particular are excluded here:
