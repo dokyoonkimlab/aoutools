@@ -33,6 +33,32 @@ DEFAULT_ENV_DIR = Path.home() / ".aoutools" / "pgscatalog_env"
 PGS_ENV_DIR = Path(os.environ.get("AOUTOOLS_PGS_ENV_DIR", DEFAULT_ENV_DIR))
 
 
+def _subprocess_env() -> dict[str, str]:
+    """
+    A copy of the environment scrubbed of settings that defeat the venv.
+
+    The isolated venv gives pgscatalog.core its own site-packages, but that
+    only isolates *imports*. Two settings the Workbench image can inherit still
+    let the base environment's pinned `tenacity` (8.2.3, held by `dsub`)
+    override the `>=9.0.0` that `pgscatalog.core` needs:
+
+    - `PIP_CONSTRAINT` makes pip apply the base image's constraints file inside
+      the venv, so `pip install pgscatalog.core` fails to resolve tenacity.
+    - `PYTHONPATH` prepends the base site-packages onto `sys.path`, so the CLI
+      imports the base tenacity at runtime even after a clean install.
+
+    Stripping those -- plus `PYTHONHOME`/`PIP_USER`, and forcing
+    `PYTHONNOUSERSITE` -- makes the child processes behave like pipx's: they see
+    only the venv. Index configuration (`PIP_INDEX_URL` and friends) is left
+    alone, since a Workbench mirror is load-bearing for the download itself.
+    """
+    env = os.environ.copy()
+    for var in ("PIP_CONSTRAINT", "PIP_USER", "PYTHONPATH", "PYTHONHOME"):
+        env.pop(var, None)
+    env["PYTHONNOUSERSITE"] = "1"
+    return env
+
+
 def _run(cmd: list[str], **kwargs) -> None:
     """
     Run a shell command, raising with the subprocess's own error text.
@@ -42,7 +68,12 @@ def _run(cmd: list[str], **kwargs) -> None:
     logging by default, so anything logged here is discarded -- which used to
     leave a caller with a bare `CalledProcessError` and no way at all to see
     why the download failed.
+
+    Runs with a scrubbed environment (see `_subprocess_env`) unless the caller
+    overrides `env`, so the isolated venv is not undone by an inherited
+    `PIP_CONSTRAINT` or `PYTHONPATH`.
     """
+    kwargs.setdefault("env", _subprocess_env())
     try:
         completed = subprocess.run(
             cmd, check=True, capture_output=True, text=True, **kwargs
@@ -87,6 +118,7 @@ def _get_pgscatalog_version(bin_dir: Path) -> str | None:
         output = subprocess.check_output(
             [bin_dir / "python", "-m", "pip", "show", "pgscatalog.core"],
             text=True,
+            env=_subprocess_env(),
         )
         for line in output.splitlines():
             if line.startswith("Version:"):

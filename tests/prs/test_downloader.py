@@ -32,6 +32,50 @@ def clear_cli_cache():
     _downloader._cached_cli_path = None
 
 
+class TestSubprocessEnv:
+    """The isolated venv only isolates imports; the child processes must also
+    run with a scrubbed environment, or the base image's pinned tenacity
+    (8.2.3, held by dsub) defeats the >=9.0.0 pgscatalog.core needs -- at
+    install time via PIP_CONSTRAINT, or at runtime via PYTHONPATH."""
+
+    def test_strips_vars_that_defeat_the_venv(self, monkeypatch):
+        monkeypatch.setenv("PIP_CONSTRAINT", "/etc/pip/constraints.txt")
+        monkeypatch.setenv(
+            "PYTHONPATH", "/opt/conda/lib/python3.10/site-packages"
+        )
+        monkeypatch.setenv("PYTHONHOME", "/opt/conda")
+        monkeypatch.setenv("PIP_USER", "1")
+
+        env = _downloader._subprocess_env()
+
+        assert "PIP_CONSTRAINT" not in env
+        assert "PYTHONPATH" not in env
+        assert "PYTHONHOME" not in env
+        assert "PIP_USER" not in env
+        assert env["PYTHONNOUSERSITE"] == "1"
+
+    def test_leaves_the_package_index_alone(self, monkeypatch):
+        """A Workbench mirror is load-bearing for the download itself."""
+        monkeypatch.setenv("PIP_INDEX_URL", "https://mirror.internal/simple")
+
+        env = _downloader._subprocess_env()
+
+        assert env["PIP_INDEX_URL"] == "https://mirror.internal/simple"
+
+    def test_run_applies_the_scrubbed_env_by_default(self, mocker, monkeypatch):
+        monkeypatch.setenv("PIP_CONSTRAINT", "/etc/pip/constraints.txt")
+        run = mocker.patch(
+            "aoutools.prs._downloader.subprocess.run",
+            return_value=subprocess.CompletedProcess(["x"], 0, "ok", ""),
+        )
+
+        _run(["x"])
+
+        passed_env = run.call_args.kwargs["env"]
+        assert "PIP_CONSTRAINT" not in passed_env
+        assert passed_env["PYTHONNOUSERSITE"] == "1"
+
+
 class TestRun:
     def test_failure_carries_the_subprocess_stderr(self, mocker):
         """The error text must reach the *exception*, not just the logger.
