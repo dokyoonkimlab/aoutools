@@ -44,7 +44,10 @@ Setup
         PRSConfig
     )
 
-    # Set logging level to INFO to view logs and check function correctness.
+    # Show progress messages. INFO reports the milestones (files loaded, variant
+    # counts, per-stage timing). For step-by-step detail while troubleshooting,
+    # turn just aoutools up to DEBUG:
+    #     logging.getLogger("aoutools").setLevel(logging.DEBUG)
     logging.basicConfig(level=logging.INFO)
 
     # Initialize Hail for the Workbench. This wires up requester-pays billing
@@ -124,8 +127,11 @@ names.
 Step 2: Calculating a Single PRS
 --------------------------------
 Once you have a weights table and the All of Us VDS loaded, you can calculate a
-PRS. To see more detailed log information, set
+PRS. To add a timing breakdown of each internal stage, set
 ``PRSConfig(detailed_timings=True)`` and pass it to the ``config`` argument.
+(For general step-by-step detail, raise the ``aoutools`` log level to ``DEBUG``
+as shown in the setup above; ``detailed_timings`` only controls the extra timing
+lines.)
 
 .. code-block:: python
 

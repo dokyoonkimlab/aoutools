@@ -472,7 +472,7 @@ def calculate_prs_batch(
             )
 
         logger.info(
-            "Starting PRS calculation. Final result will be at: %s",
+            "Starting batch PRS calculation. Final result will be at: %s",
             output_path,
         )
 

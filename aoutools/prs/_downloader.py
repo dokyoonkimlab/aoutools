@@ -49,10 +49,9 @@ def _run(cmd: list[str], **kwargs) -> None:
         )
         logger.debug("Command output: %s", completed.stdout)
     except subprocess.CalledProcessError as e:
-        logger.error("Command '%s' failed with exit code %d", cmd, e.returncode)
-        logger.error("stdout:\n%s", e.stdout)
-        logger.error("stderr:\n%s", e.stderr)
-
+        # No logger.error here: the NullHandler default swallows it, and the
+        # full failure text (exit code, stdout, stderr) goes into the raised
+        # RuntimeError below, which is where a caller actually sees it.
         details = "\n".join(
             part
             for part in (
@@ -238,7 +237,6 @@ def download_pgs(
     efo_include_children: bool = True,
     overwrite_existing_file: bool = True,
     user_agent: str | None = None,
-    verbose: bool = False,
 ) -> None:
     """
     Download PGS Catalog scoring files to a local directory or GCS bucket.
@@ -272,8 +270,6 @@ def download_pgs(
         whose file was present.
     user_agent : str, optional
         Custom user agent string.
-    verbose : bool, default False
-        Enable verbose logging.
 
     Returns
     -------
@@ -330,16 +326,11 @@ def download_pgs(
     if user_agent:
         cli_args.extend(["-c", user_agent])
 
-    if verbose:
-        logger.setLevel(logging.DEBUG)
-        logging.getLogger("pgscatalog.corelib").setLevel(logging.DEBUG)
-        logger.debug("Verbose logging enabled")
-
     outdir_str = str(outdir)
 
     if outdir_str.startswith("gs://"):
         with tempfile.TemporaryDirectory() as temp_dir:
-            logger.info(
+            logger.debug(
                 "Downloading scoring files to temporary directory: %s", temp_dir
             )
             _run_pgscatalog_download(temp_dir, *cli_args)
@@ -365,8 +356,11 @@ def download_pgs(
                 for future in concurrent.futures.as_completed(futures):
                     try:
                         future.result()  # Raises exceptions from the thread
-                    except GoogleCloudError as e:
-                        logger.error("Failed to upload file to GCS: %s", e)
+                    except GoogleCloudError:
+                        # Let the exception propagate as-is; it already names
+                        # the failed upload. A logger.error here would only
+                        # double-report under a configured handler and vanish
+                        # under the NullHandler default.
                         executor.shutdown(wait=False, cancel_futures=True)
                         raise
 

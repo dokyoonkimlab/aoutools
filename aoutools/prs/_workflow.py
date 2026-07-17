@@ -25,7 +25,6 @@ def calculate_pgs(
     build: str | None = "GRCh38",
     config: PRSConfig | None = None,
     user_agent: str | None = None,
-    verbose: bool = False,
 ) -> str | None:
     """
     Downloads specified PGS Catalog scoring files and calculates PRS.
@@ -60,8 +59,6 @@ def calculate_pgs(
         A configuration object for calculation parameters.
     user_agent : str, optional
         A custom user agent string for PGS Catalog API requests.
-    verbose : bool, default False
-        Enable verbose logging for the download process.
 
     Returns
     -------
@@ -93,7 +90,7 @@ def calculate_pgs(
     }
 
     with tempfile.TemporaryDirectory() as temp_dir:
-        logger.info(
+        logger.debug(
             "Created temporary directory for PGS downloads: %s", temp_dir
         )
 
@@ -103,7 +100,6 @@ def calculate_pgs(
             pgs=pgs,
             build=build,
             user_agent=user_agent,
-            verbose=verbose,
             overwrite_existing_file=True,
         )
 

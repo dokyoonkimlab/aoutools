@@ -43,8 +43,10 @@ optional
     sample_id_col : str, default 'person_id'
         The column name to use for sample IDs in the final output table.
     detailed_timings : bool, default False
-        If True, logs timing information for each major step. Helpful for
-        diagnosing performance issues.
+        If True, adds a per-stage timing breakdown to the INFO log, useful for
+        diagnosing performance issues. This is independent of the log level:
+        use it to profile, and separately lower the ``aoutools`` logger to
+        ``DEBUG`` if you want step-by-step detail.
     """
 
     chunk_size: int = 20000

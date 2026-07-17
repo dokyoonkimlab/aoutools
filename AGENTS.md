@@ -109,6 +109,46 @@ import — without it, autodoc fails to import the module and **silently drops t
 whole API reference** while still exiting 0. Keep that import when adding
 hail-typed unions elsewhere.
 
+## Logging
+
+Every module logs through `logging.getLogger(__name__)`, so all output lives
+under the `aoutools.*` tree; `aoutools/__init__.py` attaches a `NullHandler` so
+the library is silent until the application configures a handler. A notebook
+opts in with `logging.basicConfig(level=...)` plus
+`logging.getLogger("aoutools").setLevel(logging.INFO)`.
+
+**Levels have fixed meanings** — hold the line on them:
+
+- **DEBUG** — fine-grained internal steps and subprocess I/O (which validator is
+  running, a command's stdout). Off by default; for diagnosing, not narrating.
+- **INFO** — user-meaningful milestones only: a file loaded and its variant
+  count, per-chunk progress, a stage completing with its timing. Default-INFO
+  output should read as a short progress story, not a trace.
+- **WARNING** — data-quality events the user should notice but that do not stop
+  the run: variants dropped for bad alleles or missing coordinates, a scoring
+  file skipped, an empty result. Routine, by-design drops (zero-weight rows) are
+  INFO, not WARNING — do not cry wolf.
+- **ERROR** — reserved for a failure that is **not** also raised. Never
+  `logger.error(...)` right before `raise`: the exception already carries it,
+  and with the `NullHandler` the log line is invisible anyway. Put failure
+  detail in the exception message.
+
+**Two channels, one rule.** `warnings.warn` is for actionable *setup* advisories
+aimed at the user (a fallback VDS path, no billing project, a recovered
+bucket) — things they should change, shown once. `logger.*` is for runtime
+narration of a call that is proceeding normally. `_workbench.py` uses
+`warnings.warn`; everywhere else uses the logger.
+
+**Style.** Noun-phrase milestone or past-tense completion; no trailing `...`
+(the one exception is `_log_timing`, whose start line is a deliberate
+in-progress marker). Always use lazy `%s`/`%d` args, never an f-string inside
+the log call. Keep the wording plain — the audience is researchers, not
+engineers (see the `docs/source/` voice).
+
+There is **no per-call verbosity flag.** A user raises detail by lowering the
+`aoutools` logger level, not by passing `verbose=`. `PRSConfig.detailed_timings`
+is the one exception and is scoped to timing granularity, not a general switch.
+
 ## Architecture
 
 Public API is re-exported from internal `_`-prefixed modules via

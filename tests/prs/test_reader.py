@@ -5,6 +5,7 @@ These tests use mocking to isolate the file reading and validation logic
 from any real Hail/Spark or GCS dependencies.
 """
 
+import logging
 from unittest.mock import MagicMock
 
 import pytest
@@ -112,9 +113,12 @@ class TestReadPrsWeights:
 class TestInternalValidators:
     """Tests for internal helper functions like allele and duplicate checks."""
 
-    def test_validate_alleles_removes_bad_rows(self, mock_dependencies):
+    def test_validate_alleles_removes_bad_rows(self, mock_dependencies, caplog):
         """
-        Tests that `_validate_alleles` correctly filters rows.
+        Tests that `_validate_alleles` filters rows and WARNs about the count.
+
+        The removed count must reach the user at WARNING level -- silently
+        dropping variants with bad alleles is the failure this guards against.
         """
         mock_table = MagicMock()
         # Simulate a table with 10 rows initially, 8 after filtering
@@ -122,10 +126,12 @@ class TestInternalValidators:
         # Make the .filter() call return the same mock table
         mock_table.filter.return_value = mock_table
 
-        result_table = _validate_alleles(mock_table)
+        with caplog.at_level(logging.WARNING, logger="aoutools.prs._reader"):
+            result_table = _validate_alleles(mock_table)
 
         assert result_table.filter.call_count == 1
-        # The logger should have been called with a warning about removed rows
+        assert "Removed 2 variants with invalid alleles" in caplog.text
+        assert any(r.levelno == logging.WARNING for r in caplog.records)
 
     def test_check_duplicated_ids_raises_error(self, mock_dependencies):
         """
@@ -152,10 +158,13 @@ class TestInternalValidators:
         with pytest.raises(ValueError, match="Duplicate variants found"):
             _check_duplicated_ids(mock_table)
 
-    def test_check_duplicated_ids_passes(self, mock_dependencies):
+    def test_check_duplicated_ids_passes(self, mock_dependencies, caplog):
         """
         Tests that `_check_duplicated_ids` does not raise an error when
-        no duplicates are found.
+        no duplicates are found, and narrates only at DEBUG.
+
+        The "no duplicates" path is routine narration, so it must stay at DEBUG
+        -- default INFO output is milestones only (logging policy in AGENTS.md).
         """
         mock_table = MagicMock()
         mock_agg_table = mock_table.annotate().group_by().aggregate()
@@ -170,5 +179,10 @@ class TestInternalValidators:
         mock_no_duplicates_table.count.return_value = 0  # 0 means no duplicates
         mock_agg_table.filter.return_value = mock_no_duplicates_table
 
-        # This should run without raising an exception
-        _check_duplicated_ids(mock_table)
+        with caplog.at_level(logging.DEBUG, logger="aoutools.prs._reader"):
+            # This should run without raising an exception
+            _check_duplicated_ids(mock_table)
+
+        assert "No duplicate variants found." in caplog.text
+        assert caplog.records, "expected the routine narration to be emitted"
+        assert all(r.levelno == logging.DEBUG for r in caplog.records)

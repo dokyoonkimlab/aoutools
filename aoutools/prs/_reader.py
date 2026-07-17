@@ -33,7 +33,7 @@ def _validate_alleles(table: hl.Table) -> hl.Table:
     hail.Table
         A filtered table with only rows that contain valid alleles.
     """
-    logger.info("Validating allele columns for non-ACGT characters...")
+    logger.debug("Validating allele columns for non-ACGT characters.")
 
     dna_regex = "^[ACGT]+$"
     initial_count = table.count()
@@ -80,8 +80,8 @@ def _check_duplicated_ids(table: hl.Table, file_path: str = "input") -> None:
     ValueError
         If any duplicate variants are found based on the constructed ID.
     """
-    logger.info(
-        "Checking for duplicate variants based on chr, pos, and alleles..."
+    logger.debug(
+        "Checking for duplicate variants based on chr, pos, and alleles."
     )
 
     table_with_id = table.annotate(
@@ -107,7 +107,7 @@ def _check_duplicated_ids(table: hl.Table, file_path: str = "input") -> None:
             f"Duplicate variants found in '{file_path}'. Examples of "
             f"duplicate IDs: {formatted_examples}."
         )
-    logger.info("No duplicate variants found.")
+    logger.debug("No duplicate variants found.")
 
 
 def _process_prs_weights_table(
@@ -259,7 +259,7 @@ def _read_prs_weights_noheader(
         duplicates), if the table is empty after filtering for missing
         weights, or if duplicate variants are found.
     """
-    logger.info("Importing file (no header): '%s'", file_path)
+    logger.debug("Importing file (no header): '%s'", file_path)
 
     indices = list(column_map.values())
     if any(i < 1 for i in indices):
@@ -350,7 +350,7 @@ def _read_prs_weights_header(
         are not in the file's header, if the table is empty after
         filtering for missing weights, or if duplicate variants are found.
     """
-    logger.info("Importing file (with header): '%s'", file_path)
+    logger.debug("Importing file (with header): '%s'", file_path)
 
     col_names = list(column_map.values())
     if len(col_names) != len(set(col_names)):
@@ -563,7 +563,7 @@ def read_prscs(file_path: str, **kwargs) -> hl.Table:
     hail.Table
         A processed Hail Table of the PRS-CS weights.
     """
-    logger.info("Reading PRS-CS file: %s", file_path)
+    logger.debug("Reading PRS-CS file: %s", file_path)
     prscs_map = {
         "chr": 1,
         "pos": 3,
