@@ -145,53 +145,55 @@ def _calculate_prs_chunk(
     --------
     PRSConfig : A configuration class that holds parameters for PRS calculation.
     """
-    # Materialize the split-and-joined chunk once. The score (a per-sample
-    # entry reduction) and the hom-ref offset (a row reduction) are different
-    # aggregation scopes, so Hail reads `mt` twice; without this, the GCS read,
-    # `split_multi`, and the join all recompute on the second pass -- the chunk
-    # progress bar runs 1->1000 twice. Persisting keeps that heavy work to a
-    # single pass; both reductions then read the cache. (The caller already
-    # persists `weights_chunk`; this persists the far larger split MatrixTable.)
     mt = _prepare_mt_split(
         vds=vds,
         weights_table=weights_table,
         config=config,
-    ).persist()
+    )
 
     # The hom-ref offset -- `2w` summed over the matched rows whose effect
-    # allele is the REF base -- and the matched-variant count are pure *row*
-    # quantities: neither depends on any genotype. Reduce them over the rows
-    # table, which does not scan the entry matrix, and localize to a scalar. A
-    # homozygous-reference sample has no entry in `variant_data`, so the offset
-    # is the only way to reach it; it is added to every sample below.
+    # allele is the REF base -- reaches homozygous-reference samples, who have
+    # no entry in `variant_data` and so cannot be reached by the per-sample
+    # entry aggregation. It is a *row* reduction, a different aggregation scope
+    # from the per-sample score, so Hail computes it in a second pass.
     #
-    # These were previously `mt.aggregate_rows(..., _localize=False)` folded
-    # into `select_cols`, in the belief that a lazy row aggregation would
-    # compute in the same pass as the score. It does not: a row reduction and a
-    # per-sample entry reduction are different aggregation scopes, so Hail runs
-    # two passes over the split-and-joined MatrixTable -- and because that
-    # MatrixTable is not persisted, the second pass re-runs `split_multi` and
-    # the join, roughly doubling wall-clock. A rows-only reduction keeps the
-    # heavy per-entry pass below to a single scan.
-    rows = mt.rows()
-    row_agg_exprs = {"total_offset": hl.agg.sum(rows.hom_ref_offset)}
-    if config.include_n_matched:
-        # `mt` is already filtered to matched rows (`filter_rows` in
-        # `_prepare_mt_split`), so a plain row count *is* the number of variants
-        # in common. A genotype-aware `hl.agg.count()` over entries would
-        # undercount, since hom-ref samples have no entry to be counted.
-        row_agg_exprs["n_matched"] = hl.agg.count()
-    row_aggs = rows.aggregate(hl.struct(**row_agg_exprs))
+    # `effect_allele_is_alt` lets the caller skip that pass. If every variant's
+    # effect allele is the ALT (non-reference) base -- the convention of most
+    # harmonized GWAS summaries -- then no variant is REF-effect, the offset is
+    # identically zero, and the score is a single per-sample pass. Orientation
+    # is still resolved per row, so if the assertion is wrong the only effect
+    # is that every score is short by the same constant (`2w` per REF-effect
+    # variant): absolute values shift, but rankings, percentiles, and z-scores
+    # are exact, and the cohort is never reordered. The `n_matched` count is a
+    # separate row reduction and still costs a pass when requested.
+    total_offset = 0.0
+    n_matched = None
+    if not config.effect_allele_is_alt:
+        rows = mt.rows()
+        row_agg_exprs = {"total_offset": hl.agg.sum(rows.hom_ref_offset)}
+        if config.include_n_matched:
+            # `mt` is filtered to matched rows (`filter_rows` in
+            # `_prepare_mt_split`), so a plain row count *is* the number of
+            # variants in common. A genotype-aware `hl.agg.count()` over entries
+            # would undercount, since hom-ref samples have no entry.
+            row_agg_exprs["n_matched"] = hl.agg.count()
+        row_aggs = rows.aggregate(hl.struct(**row_agg_exprs))
+        total_offset = row_aggs.total_offset
+        if config.include_n_matched:
+            n_matched = row_aggs.n_matched
+    elif config.include_n_matched:
+        n_matched = mt.rows().aggregate(hl.agg.count())
 
     # One pass over entries: the per-sample entry sum plus the row-level offset
-    # constant (a scalar, identical for every sample).
+    # constant (a scalar, identical for every sample; zero when the offset pass
+    # was skipped).
     prs_table = mt.select_cols(
-        prs=hl.agg.sum(mt.contribution) + row_aggs.total_offset
+        prs=hl.agg.sum(mt.contribution) + total_offset
     ).cols()
 
     if config.include_n_matched:
         # A per-chunk scalar; summed across chunks in the pandas aggregation.
-        prs_table = prs_table.annotate(n_matched=row_aggs.n_matched)
+        prs_table = prs_table.annotate(n_matched=n_matched)
 
     # Rename sample ID column to user-defined name
     prs_table = prs_table.rename({"s": config.sample_id_col})

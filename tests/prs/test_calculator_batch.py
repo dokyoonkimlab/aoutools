@@ -167,10 +167,9 @@ class TestBatchHelpers:
         # each entry's pre-split total non-ref count through the split.
         mock_mt = mock_split.return_value
 
-        # Ensure annotate_rows and persist return the same mock object so that
-        # the subsequent chained calls are made on the configured mock.
+        # Ensure annotate_rows returns the same mock object so that the
+        # subsequent chained calls are made on the configured mock.
         mock_mt.annotate_rows.return_value = mock_mt
-        mock_mt.persist.return_value = mock_mt
 
         mock_mt.select_cols().cols().select_globals.return_value = "FinalTable"
 
@@ -195,10 +194,9 @@ class TestBatchHelpers:
         mock_mt.aggregate_rows.assert_not_called()
 
     def test_n_matched_does_not_add_an_entry_pass(self, mocker):
-        """`include_n_matched=True` must not add a second pass over the split
-        MatrixTable, which is not persisted -- folding a per-score
-        `mt.aggregate_rows` into `select_cols` re-ran `split_multi` and the join
-        for the whole chunk. The offsets and counts are instead one rows-only
+        """`include_n_matched=True` must not add a pass over the *entries* --
+        folding a per-score `mt.aggregate_rows` into `select_cols` re-ran the
+        whole chunk. The offsets and counts are instead one rows-only
         `mt.rows().aggregate`, leaving a single entry pass. See the single-score
         twin in `test_calculator.py`.
         """
@@ -221,7 +219,6 @@ class TestBatchHelpers:
         )
         mock_mt = mock_split.return_value
         mock_mt.annotate_rows.return_value = mock_mt
-        mock_mt.persist.return_value = mock_mt
 
         _calculate_prs_chunk_batch(
             vds=MagicMock(),
@@ -230,10 +227,48 @@ class TestBatchHelpers:
             config=PRSConfig(include_n_matched=True),
         )
 
-        # The chunk is materialized once, then the offsets and counts are one
-        # rows-only aggregation -- not folded per-score into select_cols -- and
-        # there is no separate count pass.
-        mock_mt.persist.assert_called_once()
+        # The offsets and counts are one rows-only aggregation -- not folded
+        # per-score into select_cols -- and there is no separate count pass.
         mock_mt.rows().aggregate.assert_called_once()
         mock_mt.aggregate_rows.assert_not_called()
         mock_mt.count_rows.assert_not_called()
+
+    def test_effect_allele_is_alt_skips_the_offset_pass(self, mocker):
+        """`effect_allele_is_alt=True` asserts no variant is REF-effect, so the
+        per-score offsets are zero and their rows-only reduction is skipped.
+        With `include_n_matched=False` there is no row aggregation at all -- a
+        single per-sample pass. The per-score entry terms are still built.
+        """
+        mocker.patch("aoutools.prs._calculator_batch.hl", MagicMock())
+        mock_split = mocker.patch(
+            "aoutools.prs._calculator_batch._split_multi_with_total_dosage",
+            return_value=MagicMock(),
+        )
+        mocker.patch(
+            "aoutools.prs._calculator_batch._build_row_annotations",
+            return_value={"anno1": MagicMock()},
+        )
+        mock_build_entry = mocker.patch(
+            "aoutools.prs._calculator_batch._build_prs_entry_term",
+            return_value=MagicMock(),
+        )
+        mock_build_offset = mocker.patch(
+            "aoutools.prs._calculator_batch._build_row_offset_expr",
+            return_value=MagicMock(),
+        )
+        mock_mt = mock_split.return_value
+        mock_mt.annotate_rows.return_value = mock_mt
+
+        _calculate_prs_chunk_batch(
+            vds=MagicMock(),
+            weights_tables_map={"score1": MagicMock(), "score2": MagicMock()},
+            prepared_weights=MagicMock(),
+            config=PRSConfig(effect_allele_is_alt=True),
+        )
+
+        # No offsets built and no row aggregation at all.
+        mock_build_offset.assert_not_called()
+        mock_mt.rows().aggregate.assert_not_called()
+        # The per-score entry terms are still built and aggregated once.
+        assert mock_build_entry.call_count == 2
+        mock_mt.select_cols().cols().select_globals.assert_called()

@@ -275,30 +275,30 @@ def _calculate_prs_chunk_batch(
         )
         mt = mt.annotate_rows(**row_annotations)
 
-        # Materialize the split-and-joined chunk once: the per-sample scores and
-        # the row-level offsets are different aggregation scopes, so Hail reads
-        # `mt` twice, and without this each read recomputes the GCS read,
-        # `split_multi`, and the join. Persisting keeps that heavy work to a
-        # single pass. See `_calculator.py` for the single-score twin.
-        mt = mt.persist()
-
         # Step 3: Reduce the pure *row* quantities -- each score's hom-ref
         # offset, and (if requested) its matched-variant count -- over the rows
-        # table, which does not scan the entry matrix, and localize to scalars.
-        # This keeps the heavy per-sample entry pass in Step 4 to a single scan.
+        # table, and localize to scalars. Each is a row reduction, a different
+        # aggregation scope from the per-sample scores, so Hail computes it in a
+        # second pass over the chunk.
         #
-        # Folding these into `select_cols` as `aggregate_rows(..., _localize=
-        # False)` instead made Hail run a second pass over the split-and-joined
-        # MatrixTable, which is not persisted, so `split_multi` and the join ran
-        # twice -- roughly doubling wall-clock. See `_calculator.py` for the
-        # single-score twin.
+        # `effect_allele_is_alt` skips the offset reduction: if every effect
+        # allele is the ALT there are no REF-effect variants and every offset is
+        # zero, so the scores are a single per-sample pass. Orientation stays
+        # per row, so a wrong assertion only shifts every score by a constant
+        # (rankings preserved), never reordering the cohort. See
+        # `_calculator.py` for the single-score twin. The `n_matched` counts are
+        # a separate row reduction and still cost a pass when requested.
         rows = mt.rows()
-        row_agg_exprs = {
-            f"total_offset_{score_name}": hl.agg.sum(
-                _build_row_offset_expr(rows, score_name)
+        row_agg_exprs = {}
+        if not config.effect_allele_is_alt:
+            row_agg_exprs.update(
+                {
+                    f"total_offset_{score_name}": hl.agg.sum(
+                        _build_row_offset_expr(rows, score_name)
+                    )
+                    for score_name in weights_tables_map
+                }
             )
-            for score_name in weights_tables_map
-        }
         if config.include_n_matched:
             # Batch mode never filters rows (it masks with `is_valid_*`), so the
             # count must be `count_where(is_valid_{score})`, not a plain row
@@ -307,15 +307,25 @@ def _calculate_prs_chunk_batch(
                 row_agg_exprs[f"n_matched_{score_name}"] = hl.agg.count_where(
                     rows[f"is_valid_{score_name}"]
                 )
-        row_aggs = rows.aggregate(hl.struct(**row_agg_exprs))
+        row_aggs = (
+            rows.aggregate(hl.struct(**row_agg_exprs))
+            if row_agg_exprs
+            else None
+        )
 
-        # Step 4: One entry pass -- each score's entry term plus its row-level
-        # offset scalar.
-        score_aggregators = {
-            score_name: _build_prs_entry_term(mt, score_name)
-            + row_aggs[f"total_offset_{score_name}"]
-            for score_name in weights_tables_map
-        }
+        # Step 4: One entry pass -- each score's entry term, plus its row-level
+        # offset scalar unless the offset pass was skipped.
+        if config.effect_allele_is_alt:
+            score_aggregators = {
+                score_name: _build_prs_entry_term(mt, score_name)
+                for score_name in weights_tables_map
+            }
+        else:
+            score_aggregators = {
+                score_name: _build_prs_entry_term(mt, score_name)
+                + row_aggs[f"total_offset_{score_name}"]
+                for score_name in weights_tables_map
+            }
         prs_table = mt.select_cols(**score_aggregators).cols().select_globals()
 
         if config.include_n_matched:
