@@ -159,6 +159,36 @@ BETA values.
     )
 
 
+**Advanced: Faster scoring for ALT-effect weights**
+
+To score correctly, ``aoutools`` makes an extra pass over the data that credits
+samples who carry two copies of the reference allele at any variant whose effect
+allele is the reference base. Many harmonized GWAS summary files never contain
+such a variant -- the effect allele is always the alternate (non-reference)
+allele. If you know that is true for your file, set ``effect_allele_is_alt=True``
+to skip that pass, which can roughly halve the run time.
+
+.. code-block:: python
+
+    config_fast = PRSConfig(effect_allele_is_alt=True)
+
+    prs_fast = calculate_prs(
+        weights_table=weights_ht_header,
+        vds=vds,
+        output_path=f"{bucket}/single_prs.csv",
+        config=config_fast,
+    )
+
+Leave it off (the default) unless you are sure: with it off the scores are exact
+for any file. If you turn it on and a variant's effect allele turns out to be the
+reference base after all, every sample's score is lowered by the same amount --
+so the ranking of samples, which is what a PRS is normally used for, does not
+change, but the absolute score values shift. To check whether your file
+qualifies, count how many of your variants are reference-effect (the
+``validate_public_api_on_aou.ipynb`` notebook does this); if that count is zero,
+turning this on changes only the speed, not the scores.
+
+
 Tip: Batch PRS Calculation
 ------------------------------------
 To calculate multiple scores efficiently, use ``calculate_prs_batch``. This is
