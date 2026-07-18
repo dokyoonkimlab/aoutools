@@ -108,6 +108,9 @@ class TestChunkProcessing:
         )
         mock_mt = MagicMock()
         mock_prepare_split.return_value = mock_mt
+        # The split MatrixTable is persisted so both reductions read one
+        # materialized copy; keep the chained calls on the same mock.
+        mock_mt.persist.return_value = mock_mt
 
         # Act
         _calculate_prs_chunk(
@@ -116,6 +119,9 @@ class TestChunkProcessing:
 
         # Assert
         mock_prepare_split.assert_called_once()
+        # The split chunk is materialized once; without this the two reductions
+        # each re-run split_multi and the join over the unpersisted MT.
+        mock_mt.persist.assert_called_once()
         # The hom-ref offset is aggregated over *rows*, not entries -- the only
         # way to reach samples with no entry. It is reduced over `mt.rows()`,
         # which never scans the entry matrix, rather than folded into
@@ -145,6 +151,7 @@ class TestChunkProcessing:
         mocker.patch(
             "aoutools.prs._calculator._prepare_mt_split", return_value=mock_mt
         )
+        mock_mt.persist.return_value = mock_mt
 
         _calculate_prs_chunk(
             weights_table=MagicMock(),
@@ -152,6 +159,9 @@ class TestChunkProcessing:
             config=PRSConfig(include_n_matched=True),
         )
 
+        # The chunk is materialized once so the offset and count reductions do
+        # not each re-run split_multi over the unpersisted MT.
+        mock_mt.persist.assert_called_once()
         # A second pass over the unpersisted MT is exactly what was removed.
         mock_mt.count_rows.assert_not_called()
         # The offset and count are a single rows-only aggregation, not two

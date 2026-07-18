@@ -145,11 +145,18 @@ def _calculate_prs_chunk(
     --------
     PRSConfig : A configuration class that holds parameters for PRS calculation.
     """
+    # Materialize the split-and-joined chunk once. The score (a per-sample
+    # entry reduction) and the hom-ref offset (a row reduction) are different
+    # aggregation scopes, so Hail reads `mt` twice; without this, the GCS read,
+    # `split_multi`, and the join all recompute on the second pass -- the chunk
+    # progress bar runs 1->1000 twice. Persisting keeps that heavy work to a
+    # single pass; both reductions then read the cache. (The caller already
+    # persists `weights_chunk`; this persists the far larger split MatrixTable.)
     mt = _prepare_mt_split(
         vds=vds,
         weights_table=weights_table,
         config=config,
-    )
+    ).persist()
 
     # The hom-ref offset -- `2w` summed over the matched rows whose effect
     # allele is the REF base -- and the matched-variant count are pure *row*

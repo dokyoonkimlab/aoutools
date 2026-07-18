@@ -167,9 +167,10 @@ class TestBatchHelpers:
         # each entry's pre-split total non-ref count through the split.
         mock_mt = mock_split.return_value
 
-        # Ensure annotate_rows returns the same mock object so that the
-        # subsequent chained calls are made on the configured mock.
+        # Ensure annotate_rows and persist return the same mock object so that
+        # the subsequent chained calls are made on the configured mock.
         mock_mt.annotate_rows.return_value = mock_mt
+        mock_mt.persist.return_value = mock_mt
 
         mock_mt.select_cols().cols().select_globals.return_value = "FinalTable"
 
@@ -220,6 +221,7 @@ class TestBatchHelpers:
         )
         mock_mt = mock_split.return_value
         mock_mt.annotate_rows.return_value = mock_mt
+        mock_mt.persist.return_value = mock_mt
 
         _calculate_prs_chunk_batch(
             vds=MagicMock(),
@@ -228,8 +230,10 @@ class TestBatchHelpers:
             config=PRSConfig(include_n_matched=True),
         )
 
-        # Offsets and counts computed in one rows-only aggregation, not folded
-        # per-score into select_cols; and no separate count pass.
+        # The chunk is materialized once, then the offsets and counts are one
+        # rows-only aggregation -- not folded per-score into select_cols -- and
+        # there is no separate count pass.
+        mock_mt.persist.assert_called_once()
         mock_mt.rows().aggregate.assert_called_once()
         mock_mt.aggregate_rows.assert_not_called()
         mock_mt.count_rows.assert_not_called()

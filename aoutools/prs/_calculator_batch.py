@@ -275,6 +275,13 @@ def _calculate_prs_chunk_batch(
         )
         mt = mt.annotate_rows(**row_annotations)
 
+        # Materialize the split-and-joined chunk once: the per-sample scores and
+        # the row-level offsets are different aggregation scopes, so Hail reads
+        # `mt` twice, and without this each read recomputes the GCS read,
+        # `split_multi`, and the join. Persisting keeps that heavy work to a
+        # single pass. See `_calculator.py` for the single-score twin.
+        mt = mt.persist()
+
         # Step 3: Reduce the pure *row* quantities -- each score's hom-ref
         # offset, and (if requested) its matched-variant count -- over the rows
         # table, which does not scan the entry matrix, and localize to scalars.
