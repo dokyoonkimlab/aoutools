@@ -141,8 +141,8 @@ class TestBatchHelpers:
 
     def test_calculate_prs_chunk_batch(self, mocker):
         """
-        Tests that the batch chunk calculator builds annotations and
-        aggregators for each score.
+        Tests that the batch chunk calculator builds annotations, per-score
+        row offsets, and per-score entry aggregators.
         """
         # Arrange
         mocker.patch("aoutools.prs._calculator_batch.hl", MagicMock())
@@ -154,8 +154,12 @@ class TestBatchHelpers:
             "aoutools.prs._calculator_batch._build_row_annotations",
             return_value={"anno1": MagicMock()},
         )
-        mock_build_agg = mocker.patch(
-            "aoutools.prs._calculator_batch._build_prs_agg_expr",
+        mock_build_entry = mocker.patch(
+            "aoutools.prs._calculator_batch._build_prs_entry_term",
+            return_value=MagicMock(),
+        )
+        mock_build_offset = mocker.patch(
+            "aoutools.prs._calculator_batch._build_row_offset_expr",
             return_value=MagicMock(),
         )
         mock_vds = MagicMock()
@@ -181,15 +185,21 @@ class TestBatchHelpers:
         # Assert
         assert result == "FinalTable"
         mock_build_rows.assert_called_once()
-        assert mock_build_agg.call_count == 2
+        # One entry term and one row-offset expression per score.
+        assert mock_build_entry.call_count == 2
+        assert mock_build_offset.call_count == 2
+        # The row quantities are one rows-only aggregation, not a per-score
+        # `aggregate_rows` folded into select_cols.
+        mock_mt.rows().aggregate.assert_called_once()
+        mock_mt.aggregate_rows.assert_not_called()
 
-    def test_n_matched_folds_into_the_scoring_pass(self, mocker):
+    def test_n_matched_does_not_add_an_entry_pass(self, mocker):
         """`include_n_matched=True` must not add a second pass over the split
-        MatrixTable, which is not persisted -- a separate `mt.aggregate_rows`
-        would re-run `split_multi` and the join for the whole chunk. The counts
-        are lazy `_localize=False` row aggregations that compute in the same
-        `select_cols` job as the scores. See the single-score twin in
-        `test_calculator.py`.
+        MatrixTable, which is not persisted -- folding a per-score
+        `mt.aggregate_rows` into `select_cols` re-ran `split_multi` and the join
+        for the whole chunk. The offsets and counts are instead one rows-only
+        `mt.rows().aggregate`, leaving a single entry pass. See the single-score
+        twin in `test_calculator.py`.
         """
         mocker.patch("aoutools.prs._calculator_batch.hl", MagicMock())
         mock_split = mocker.patch(
@@ -201,7 +211,11 @@ class TestBatchHelpers:
             return_value={"anno1": MagicMock()},
         )
         mocker.patch(
-            "aoutools.prs._calculator_batch._build_prs_agg_expr",
+            "aoutools.prs._calculator_batch._build_prs_entry_term",
+            return_value=MagicMock(),
+        )
+        mocker.patch(
+            "aoutools.prs._calculator_batch._build_row_offset_expr",
             return_value=MagicMock(),
         )
         mock_mt = mock_split.return_value
@@ -214,11 +228,8 @@ class TestBatchHelpers:
             config=PRSConfig(include_n_matched=True),
         )
 
-        # One aggregate_rows per score (the folded counts), all lazy, and only
-        # one materializing select_cols().cols() action for the whole chunk.
-        assert mock_mt.aggregate_rows.call_count == 2
-        assert all(
-            call.kwargs.get("_localize") is False
-            for call in mock_mt.aggregate_rows.call_args_list
-        )
+        # Offsets and counts computed in one rows-only aggregation, not folded
+        # per-score into select_cols; and no separate count pass.
+        mock_mt.rows().aggregate.assert_called_once()
+        mock_mt.aggregate_rows.assert_not_called()
         mock_mt.count_rows.assert_not_called()

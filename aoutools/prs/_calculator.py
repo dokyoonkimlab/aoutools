@@ -151,37 +151,40 @@ def _calculate_prs_chunk(
         config=config,
     )
 
-    # Sum of `2w` over the matched rows whose effect allele is the REF base.
-    # A homozygous-reference sample has no entry in `variant_data`, so no
-    # aggregation over *entries* can reach it; this term is aggregated over
-    # *rows* and added to every sample. `_localize=False` keeps it a lazy
-    # expression so it folds into the aggregation below rather than costing a
-    # second pass over the VDS.
-    total_offset = mt.aggregate_rows(
-        hl.agg.sum(mt.hom_ref_offset), _localize=False
-    )
+    # The hom-ref offset -- `2w` summed over the matched rows whose effect
+    # allele is the REF base -- and the matched-variant count are pure *row*
+    # quantities: neither depends on any genotype. Reduce them over the rows
+    # table, which does not scan the entry matrix, and localize to a scalar. A
+    # homozygous-reference sample has no entry in `variant_data`, so the offset
+    # is the only way to reach it; it is added to every sample below.
+    #
+    # These were previously `mt.aggregate_rows(..., _localize=False)` folded
+    # into `select_cols`, in the belief that a lazy row aggregation would
+    # compute in the same pass as the score. It does not: a row reduction and a
+    # per-sample entry reduction are different aggregation scopes, so Hail runs
+    # two passes over the split-and-joined MatrixTable -- and because that
+    # MatrixTable is not persisted, the second pass re-runs `split_multi` and
+    # the join, roughly doubling wall-clock. A rows-only reduction keeps the
+    # heavy per-entry pass below to a single scan.
+    rows = mt.rows()
+    row_agg_exprs = {"total_offset": hl.agg.sum(rows.hom_ref_offset)}
+    if config.include_n_matched:
+        # `mt` is already filtered to matched rows (`filter_rows` in
+        # `_prepare_mt_split`), so a plain row count *is* the number of variants
+        # in common. A genotype-aware `hl.agg.count()` over entries would
+        # undercount, since hom-ref samples have no entry to be counted.
+        row_agg_exprs["n_matched"] = hl.agg.count()
+    row_aggs = rows.aggregate(hl.struct(**row_agg_exprs))
 
-    col_exprs = {"prs": hl.agg.sum(mt.contribution) + total_offset}
+    # One pass over entries: the per-sample entry sum plus the row-level offset
+    # constant (a scalar, identical for every sample).
+    prs_table = mt.select_cols(
+        prs=hl.agg.sum(mt.contribution) + row_aggs.total_offset
+    ).cols()
 
     if config.include_n_matched:
-        # Count matched variants in the SAME pass as the score, not a separate
-        # `mt.count_rows()`. `mt` is the split-and-joined MatrixTable and is not
-        # persisted, so a second action re-runs `split_multi` and the join over
-        # the whole chunk -- a full extra pass that roughly doubled wall-clock.
-        # `_localize=False` keeps this a lazy row aggregation that folds into
-        # the `select_cols` job below, exactly as `total_offset` does. `mt` is
-        # already filtered to matched rows (`filter_rows` in `_prepare_mt_split`
-        # ), so a plain row count *is* the number of variants in common. It is a
-        # scalar, identical for every sample -- a genotype-aware
-        # `hl.agg.count()` over entries would instead undercount, since hom-ref
-        # samples have no entry to be counted.
-        col_exprs["n_matched"] = mt.aggregate_rows(
-            hl.agg.count(), _localize=False
-        )
-
-    # One pass: the score sum, its row-level offset, and the matched count are
-    # all computed together.
-    prs_table = mt.select_cols(**col_exprs).cols()
+        # A per-chunk scalar; summed across chunks in the pandas aggregation.
+        prs_table = prs_table.annotate(n_matched=row_aggs.n_matched)
 
     # Rename sample ID column to user-defined name
     prs_table = prs_table.rename({"s": config.sample_id_col})

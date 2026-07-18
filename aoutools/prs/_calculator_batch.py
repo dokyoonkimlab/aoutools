@@ -133,24 +133,26 @@ def _build_row_annotations(
     return annotations
 
 
-def _build_prs_agg_expr(
+def _build_prs_entry_term(
     mt: hl.MatrixTable,
     score_name: str,
-) -> hl.expr.Aggregation:
+) -> hl.expr.Float64Expression:
     """
-    Builds an aggregation expression to compute a Polygenic Risk Score (PRS)
-    for a given score.
+    Builds the per-entry aggregation for one score.
 
-    This expression sums `weight_per_alt_copy * dosage` over the entries of all
-    valid variants, and adds the row-level `hom_ref_offset` term that entry
-    aggregation cannot reach. A variant is valid if it is matched in the weights
-    table. Which dosage is counted depends on the row's orientation -- see
+    This sums `weight_per_alt_copy * dosage` over the entries of all valid
+    variants. A variant is valid if it is matched in the weights table; which
+    dosage is counted depends on the row's orientation -- see
     `_entry_contribution` and `_orient_weight_and_offset`.
 
+    This is only the entry term. Homozygous-reference samples have no entry, so
+    the row-level `hom_ref_offset` that reaches them is summed separately over
+    rows (see `_build_row_offset_expr` and `_calculate_prs_chunk_batch`) and
+    added to this term -- which keeps the heavy entry pass to a single scan.
+
     Unlike the single-score path, batch mode never filters rows -- it masks with
-    `hl.if_else(is_valid, ...)` -- so **both** terms must be gated on
-    `is_valid_{score}`. An unmatched weights row must contribute no offset, or
-    every sample is credited for a variant that is not in the callset.
+    `hl.if_else(is_valid, ...)` -- so an unmatched weights row must contribute
+    nothing here.
 
     Parameters
     ----------
@@ -164,9 +166,8 @@ def _build_prs_agg_expr(
 
     Returns
     -------
-    hl.expr.Aggregation
-        An aggregation expression for the given score, including the hom-ref
-        offset.
+    hl.expr.Float64Expression
+        The per-entry aggregation for the given score (without the offset).
     """
     weights_info = mt[f"weights_info_{score_name}"]
     is_valid = mt[f"is_valid_{score_name}"]
@@ -179,14 +180,34 @@ def _build_prs_agg_expr(
     )
 
     # Aggregated over entries: hom-ref samples are absent and never visited.
-    entry_term = hl.agg.sum(hl.if_else(is_valid, contribution, 0.0))
-    # Aggregated over rows: reaches every sample, including the absent ones.
-    offset_term = mt.aggregate_rows(
-        hl.agg.sum(hl.if_else(is_valid, hom_ref_offset, 0.0)),
-        _localize=False,
-    )
+    return hl.agg.sum(hl.if_else(is_valid, contribution, 0.0))
 
-    return entry_term + offset_term
+
+def _build_row_offset_expr(
+    rows: hl.Table,
+    score_name: str,
+) -> hl.expr.Float64Expression:
+    """
+    The per-row hom-ref offset for one score, masked to matched rows.
+
+    Returns `hom_ref_offset` where the weights row matched, else `0.0`. Summed
+    over rows -- a scan that never touches the entry matrix -- this gives the
+    constant `2w` that every sample must receive, including the homozygous-
+    reference ones that have no entry. See `_orient_weight_and_offset`.
+
+    Takes the **rows table** (`mt.rows()`), not the MatrixTable, so the returned
+    expression is sourced from the same table it is aggregated over.
+
+    Batch mode never filters rows, so the offset must be gated on
+    `is_valid_{score}`: an unmatched weights row must contribute no offset, or
+    every sample is credited for a variant that is not in the callset.
+    """
+    weights_info = rows[f"weights_info_{score_name}"]
+    is_valid = rows[f"is_valid_{score_name}"]
+    _, hom_ref_offset, _ = _orient_weight_and_offset(
+        rows.canonical_alleles[0], weights_info
+    )
+    return hl.if_else(is_valid, hom_ref_offset, 0.0)
 
 
 def _calculate_prs_chunk_batch(
@@ -254,32 +275,53 @@ def _calculate_prs_chunk_batch(
         )
         mt = mt.annotate_rows(**row_annotations)
 
-        # Step 3: Build score aggregators across columns (i.e., samples)
-        score_aggregators = {
-            score_name: _build_prs_agg_expr(mt, score_name)
+        # Step 3: Reduce the pure *row* quantities -- each score's hom-ref
+        # offset, and (if requested) its matched-variant count -- over the rows
+        # table, which does not scan the entry matrix, and localize to scalars.
+        # This keeps the heavy per-sample entry pass in Step 4 to a single scan.
+        #
+        # Folding these into `select_cols` as `aggregate_rows(..., _localize=
+        # False)` instead made Hail run a second pass over the split-and-joined
+        # MatrixTable, which is not persisted, so `split_multi` and the join ran
+        # twice -- roughly doubling wall-clock. See `_calculator.py` for the
+        # single-score twin.
+        rows = mt.rows()
+        row_agg_exprs = {
+            f"total_offset_{score_name}": hl.agg.sum(
+                _build_row_offset_expr(rows, score_name)
+            )
             for score_name in weights_tables_map
         }
+        if config.include_n_matched:
+            # Batch mode never filters rows (it masks with `is_valid_*`), so the
+            # count must be `count_where(is_valid_{score})`, not a plain row
+            # count.
+            for score_name in weights_tables_map:
+                row_agg_exprs[f"n_matched_{score_name}"] = hl.agg.count_where(
+                    rows[f"is_valid_{score_name}"]
+                )
+        row_aggs = rows.aggregate(hl.struct(**row_agg_exprs))
+
+        # Step 4: One entry pass -- each score's entry term plus its row-level
+        # offset scalar.
+        score_aggregators = {
+            score_name: _build_prs_entry_term(mt, score_name)
+            + row_aggs[f"total_offset_{score_name}"]
+            for score_name in weights_tables_map
+        }
+        prs_table = mt.select_cols(**score_aggregators).cols().select_globals()
 
         if config.include_n_matched:
-            # Fold each score's matched-variant count into the SAME pass as the
-            # scores. A separate `mt.aggregate_rows(...)` re-runs `split_multi`
-            # and the join over the chunk -- a full extra pass.
-            # `_localize=False` makes each count a lazy row aggregation that
-            # computes alongside the score in the single `select_cols` job
-            # below. See `_calculator.py` for the same fix on the single-score
-            # path. Unlike that path the batch MT is not row-filtered (it masks
-            # with `is_valid_*` instead), so the count must be
-            # `count_where(is_valid_{score})`, not a plain row count.
-            for score_name in weights_tables_map:
-                score_aggregators[f"n_matched_{score_name}"] = (
-                    mt.aggregate_rows(
-                        hl.agg.count_where(mt[f"is_valid_{score_name}"]),
-                        _localize=False,
-                    )
-                )
-
-        # Compute and return the per-sample PRS results
-        prs_table = mt.select_cols(**score_aggregators).cols().select_globals()
+            # Per-chunk scalars, identical for every sample; summed across
+            # chunks in the pandas aggregation.
+            prs_table = prs_table.annotate(
+                **{
+                    f"n_matched_{score_name}": row_aggs[
+                        f"n_matched_{score_name}"
+                    ]
+                    for score_name in weights_tables_map
+                }
+            )
 
     return prs_table
 
