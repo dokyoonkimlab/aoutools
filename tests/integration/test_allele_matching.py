@@ -526,6 +526,58 @@ def test_does_not_credit_the_offset_for_an_unmatched_variant(
 
 
 # --------------------------------------------------------------------------
+# effect_allele_is_alt: skipping the offset pass.
+# --------------------------------------------------------------------------
+
+
+def test_effect_allele_is_alt_is_exact_when_the_file_is_alt_effect(
+    vds_lgt, raw_weights
+):
+    """CORRECT. `effect_allele_is_alt=True` skips the offset pass. When the
+    assertion holds -- every effect allele really is the ALT -- the scores are
+    identical to the default, because the offset was zero for these rows anyway.
+
+    chr1:1000 (effect G) and chr1:5000 (effect T) are both ALT-effect.
+    """
+    default, _ = score(vds_lgt, raw_weights, positions=[1000, 5000])
+    fast, _ = score(
+        vds_lgt, raw_weights, positions=[1000, 5000], effect_allele_is_alt=True
+    )
+
+    assert fast == default
+
+
+def test_effect_allele_is_alt_only_shifts_by_a_constant_when_wrong(
+    vds_lgt, raw_weights
+):
+    """The safety property. If the assertion is wrong -- a variant's effect
+    allele is actually the REF -- skipping the offset does not corrupt the
+    ranking. Every sample loses exactly the same constant (2w per REF-effect
+    variant), so absolute scores shift but their order is unchanged, which is
+    what a PRS is used for.
+
+    chr1:2000 is REF-effect (effect A = the REF base), weight 1.0. This is the
+    single line that distinguishes the flag from the removed `ref_is_effect_-
+    allele` knob, which reordered the cohort.
+    """
+    correct, _ = score(vds_lgt, raw_weights, positions=[2000])
+    skipped, _ = score(
+        vds_lgt, raw_weights, positions=[2000], effect_allele_is_alt=True
+    )
+
+    # Every sample is short by exactly 2w = 2.0 -- a constant. This includes the
+    # no-call S4, whose offset cancellation is what keeps the shift uniform
+    # rather than genotype-dependent.
+    deltas = {s: correct[s] - skipped[s] for s in correct}
+    assert deltas == {"S1": 2.0, "S2": 2.0, "S3": 2.0, "S4": 2.0}, (
+        f"expected a uniform 2w shift, got {deltas}"
+    )
+
+    # The ranking is therefore preserved.
+    assert sorted(correct, key=correct.get) == sorted(skipped, key=skipped.get)
+
+
+# --------------------------------------------------------------------------
 # Batch must agree with single.
 # --------------------------------------------------------------------------
 

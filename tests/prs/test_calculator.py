@@ -108,6 +108,9 @@ class TestChunkProcessing:
         )
         mock_mt = MagicMock()
         mock_prepare_split.return_value = mock_mt
+        # The chunk is persisted because the offset pass runs alongside the
+        # score; keep the chained calls on the same mock.
+        mock_mt.persist.return_value = mock_mt
 
         # Act
         _calculate_prs_chunk(
@@ -116,24 +119,54 @@ class TestChunkProcessing:
 
         # Assert
         mock_prepare_split.assert_called_once()
-        # The hom-ref offset is aggregated over *rows*, not entries -- it is the
-        # only way to reach samples with no entry. Losing this call would zero
-        # every homozygous-reference sample at a REF-effect variant.
-        mock_mt.aggregate_rows.assert_called_once()
-        assert mock_mt.aggregate_rows.call_args.kwargs["_localize"] is False
-        # Verify that the final aggregation step was called on the mock mt
+        # The chunk is materialized once so the offset and score do not each
+        # re-run split_multi and the join over the unpersisted MT.
+        mock_mt.persist.assert_called_once()
+        # The hom-ref offset is aggregated over *rows*, not entries -- the only
+        # way to reach samples with no entry. Losing this would zero every
+        # homozygous-reference sample at a REF-effect variant.
+        mock_mt.rows().aggregate.assert_called_once()
+        # Verify that the single materializing entry aggregation was called.
         mock_mt.select_cols().cols.assert_called_once()
 
-    def test_n_matched_is_folded_into_the_scoring_pass(self, mocker):
-        """`include_n_matched=True` must not add a second pass over the split
-        MatrixTable.
+    def test_n_matched_does_not_add_an_entry_pass(self, mocker):
+        """`include_n_matched=True` must not add a pass over the *entries*.
 
-        `mt` is not persisted, so a standalone `mt.count_rows()` (or a
-        separate `mt.aggregate_rows(...)`) re-runs `split_multi` and the join
-        over the whole chunk -- which roughly doubled wall-clock. The count is
-        instead a lazy `_localize=False` row aggregation that folds into the
-        same `select_cols` job as the score. This pins that: `count_rows` is
-        never called, and the extra aggregation is lazy.
+        A standalone `mt.count_rows()`, or folding the count into `select_cols`
+        as an entry-scoped `mt.aggregate_rows(...)`, re-runs the whole chunk.
+        The offset and the matched count are instead reduced together over
+        `mt.rows()`, a rows-only scan. This pins that: `count_rows` and
+        `aggregate_rows` are never called, there is one `mt.rows().aggregate`,
+        and one materializing `select_cols().cols()`.
+        """
+        mocker.patch("aoutools.prs._calculator.hl", MagicMock())
+        mock_mt = MagicMock()
+        mocker.patch(
+            "aoutools.prs._calculator._prepare_mt_split", return_value=mock_mt
+        )
+        mock_mt.persist.return_value = mock_mt
+
+        _calculate_prs_chunk(
+            weights_table=MagicMock(),
+            vds=MagicMock(),
+            config=PRSConfig(include_n_matched=True),
+        )
+
+        # A separate entry pass for the count is exactly what is avoided.
+        mock_mt.count_rows.assert_not_called()
+        # The offset and count are a single rows-only aggregation, not two
+        # entry-scoped `aggregate_rows` folded into select_cols.
+        mock_mt.rows().aggregate.assert_called_once()
+        mock_mt.aggregate_rows.assert_not_called()
+        # Still one materializing action, not two.
+        mock_mt.select_cols().cols.assert_called_once()
+
+    def test_effect_allele_is_alt_skips_the_offset_pass(self, mocker):
+        """`effect_allele_is_alt=True` asserts no variant is REF-effect, so the
+        offset is zero and its rows-only reduction is skipped. With
+        `include_n_matched=False` (as here) no row reduction runs at all, so the
+        per-sample score is the only pass. `n_matched` would need its own row
+        reduction, and would keep the second pass -- that is covered separately.
         """
         mocker.patch("aoutools.prs._calculator.hl", MagicMock())
         mock_mt = MagicMock()
@@ -144,17 +177,13 @@ class TestChunkProcessing:
         _calculate_prs_chunk(
             weights_table=MagicMock(),
             vds=MagicMock(),
-            config=PRSConfig(include_n_matched=True),
+            config=PRSConfig(effect_allele_is_alt=True),
         )
 
-        # A second pass over the unpersisted MT is exactly what was removed.
-        mock_mt.count_rows.assert_not_called()
-        # Two row aggregations now: the offset and the matched count. Both must
-        # be lazy so they fold into the single select_cols job.
-        assert mock_mt.aggregate_rows.call_count == 2
-        assert all(
-            call.kwargs.get("_localize") is False
-            for call in mock_mt.aggregate_rows.call_args_list
-        )
-        # Still one materializing action, not two.
+        # No offset pass: the rows reduction is skipped.
+        mock_mt.rows().aggregate.assert_not_called()
+        mock_mt.aggregate_rows.assert_not_called()
+        # Single pass, so no materialization is needed either.
+        mock_mt.persist.assert_not_called()
+        # Only the single per-sample entry aggregation remains.
         mock_mt.select_cols().cols.assert_called_once()

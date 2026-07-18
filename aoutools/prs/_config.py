@@ -47,6 +47,24 @@ optional
         diagnosing performance issues. This is independent of the log level:
         use it to profile, and separately lower the ``aoutools`` logger to
         ``DEBUG`` if you want step-by-step detail.
+    effect_allele_is_alt : bool, default False
+        Set this only if you know that in your weights file the effect allele
+        is the alternate (non-reference) allele for **every** variant -- the
+        usual convention of harmonized GWAS summaries. It lets the scorer skip
+        the extra pass over each chunk that credits homozygous-reference
+        samples at variants whose effect allele is the reference base, which can
+        roughly halve the run time. (Requesting ``include_n_matched`` needs its
+        own pass, so it keeps the second pass even with this set.)
+
+        Leave it False (the default) unless you are sure: with it False the
+        score is exact for any file. If you set it True and a variant's effect
+        allele turns out to be the reference after all, every score is short by
+        the same constant, so absolute PRS values shift but rankings,
+        percentiles, and z-scores are unaffected and the cohort is never
+        reordered. To check whether your file qualifies, count how many of your
+        variants are reference-effect (the ``validate_public_api_on_aou.ipynb``
+        notebook does this); if that count is zero, setting this True changes
+        the speed but not the scores.
     """
 
     chunk_size: int = 20000
@@ -58,3 +76,4 @@ optional
     include_n_matched: bool = False
     sample_id_col: str = "person_id"
     detailed_timings: bool = False
+    effect_allele_is_alt: bool = False

@@ -25,6 +25,8 @@ def test_prs_config_defaults():
     assert config.include_n_matched is False
     assert config.sample_id_col == "person_id"
     assert config.detailed_timings is False
+    # Off by default: the offset is computed, so scores are exact for any file.
+    assert config.effect_allele_is_alt is False
 
 
 def test_prs_config_custom_values():
