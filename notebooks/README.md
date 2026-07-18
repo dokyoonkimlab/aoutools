@@ -34,6 +34,12 @@ notebooks resolve the VDS path themselves via `get_vds_path()`.
 The offline cells of `validate_synthetic_control_on_aou.ipynb` need no Workbench —
 run them locally under `pixi run -e integration`.
 
+## Benchmark (not a validation tier)
+
+`benchmark_scoring_speed.ipynb` times `calculate_prs` on a real VDS window. It
+asserts nothing about correctness -- run it once per install to compare scoring
+speed across versions (e.g. before merging a performance change). Workbench only.
+
 ## Why each notebook exists
 
 For the design reasoning behind these — which correctness finding each one pins,
