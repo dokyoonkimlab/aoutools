@@ -8,6 +8,7 @@ import logging
 from math import ceil
 
 import hail as hl
+from hail.utils.java import FatalError
 
 from ._config import PRSConfig
 from ._utils import (
@@ -16,6 +17,25 @@ from ._utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _unpersist_quietly(dataset: hl.MatrixTable | hl.Table) -> None:
+    """
+    Release a persisted Hail dataset's cache, best-effort.
+
+    A persisted chunk that is never released stays pinned in executor memory
+    for the whole run, so freeing it once its result is materialized keeps
+    memory from growing across chunks. Hail's local Spark backend, however,
+    removes the persist directory non-recursively and raises
+    ``IOException: Directory ... is not empty`` -- a backend quirk, not a data
+    problem. The result is already computed by the time this is called, and any
+    cache the release leaves behind is reclaimed when the Hail session ends, so
+    a failure here is safe to ignore.
+    """
+    try:
+        dataset.unpersist()
+    except FatalError as exc:
+        logger.debug("Could not release a persisted cache: %s", exc)
 
 
 def _prepare_samples_to_keep(

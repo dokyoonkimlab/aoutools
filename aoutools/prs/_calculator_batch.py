@@ -17,6 +17,7 @@ from ._calculator_utils import (
     _prepare_samples_to_keep,
     _prepare_weights_for_chunking,
     _split_multi_with_total_dosage,
+    _unpersist_quietly,
     _validate_and_prepare_weights_table,
 )
 from ._config import PRSConfig
@@ -215,7 +216,7 @@ def _calculate_prs_chunk_batch(
     weights_tables_map: dict[str, hl.Table],
     prepared_weights: dict[str, hl.Table],
     config: PRSConfig,
-) -> hl.Table:
+) -> pd.DataFrame:
     """
     Calculates all Polygenic Risk Scores (PRS) for a single chunk of a
     VariantDataset (VDS).
@@ -242,10 +243,11 @@ def _calculate_prs_chunk_batch(
 
     Returns
     -------
-    hl.Table
-        A Hail Table with one row per sample and one column per PRS score. If
+    pandas.DataFrame
+        A DataFrame with one row per sample and one column per PRS score. If
         `include_n_matched=True`, additional columns for the number of valid
-        variants (e.g., `n_matched_score1`) are included.
+        variants (e.g., `n_matched_score1`) are included. The chunk's cached
+        MatrixTable, if it was persisted, is released before returning.
 
     See also
     --------
@@ -280,7 +282,8 @@ def _calculate_prs_chunk_batch(
         # computed once and the second pass reads the cache. Skipped when
         # effect_allele_is_alt leaves the score as the only pass. See
         # `_calculator.py` for the single-score twin.
-        if not config.effect_allele_is_alt or config.include_n_matched:
+        persisted = not config.effect_allele_is_alt or config.include_n_matched
+        if persisted:
             mt = mt.persist()
 
         # Step 3: Reduce the pure *row* quantities -- each score's hom-ref
@@ -349,7 +352,17 @@ def _calculate_prs_chunk_batch(
                 }
             )
 
-    return prs_table
+        # Rename sample ID column to the user-defined name.
+        prs_table = prs_table.rename({"s": config.sample_id_col})
+
+    # Materialize the small per-sample result, then release the chunk's cache.
+    # Nothing else unpersists it, so each persisted chunk would stay pinned in
+    # executor memory for the whole run; across many chunks that accumulates
+    # into memory pressure and spill that erases the persist's benefit.
+    result_df = prs_table.to_pandas()
+    if persisted:
+        _unpersist_quietly(mt)
+    return result_df
 
 
 def _process_chunks_batch(
@@ -422,14 +435,20 @@ def _process_chunks_batch(
                 for score_name, table in prepared_weights.items()
             }
 
-            chunk_prs_table = _calculate_prs_chunk_batch(
-                vds_chunk, weights_tables_map, chunked_prepared_weights, config
+            # Returns a materialized per-chunk DataFrame (sample ID already
+            # renamed), having released its own cached MatrixTable.
+            partial_dfs.append(
+                _calculate_prs_chunk_batch(
+                    vds_chunk,
+                    weights_tables_map,
+                    chunked_prepared_weights,
+                    config,
+                )
             )
 
-            chunk_prs_table = chunk_prs_table.rename(
-                {"s": config.sample_id_col}
-            )
-            partial_dfs.append(chunk_prs_table.to_pandas())
+            # The result is materialized, so the persisted loci chunk can be
+            # released too.
+            _unpersist_quietly(loci_chunk)
     return partial_dfs
 
 

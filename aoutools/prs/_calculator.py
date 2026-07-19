@@ -17,6 +17,7 @@ from ._calculator_utils import (
     _prepare_samples_to_keep,
     _prepare_weights_for_chunking,
     _split_multi_with_total_dosage,
+    _unpersist_quietly,
 )
 from ._config import PRSConfig
 from ._utils import _log_timing
@@ -117,7 +118,7 @@ def _prepare_mt_split(
 
 def _calculate_prs_chunk(
     weights_table: hl.Table, vds: hl.vds.VariantDataset, config: PRSConfig
-) -> hl.Table:
+) -> pd.DataFrame:
     """
     Calculates a Polygenic Risk Score (PRS) for a single chunk of variants.
 
@@ -137,9 +138,11 @@ def _calculate_prs_chunk(
 
     Returns
     -------
-    hail.Table
-        A Hail Table with one row per sample and a PRS column. If requested,
-        also includes the number of matched variants ('n_matched').
+    pandas.DataFrame
+        A DataFrame with one row per sample and a PRS column. If requested,
+        also includes the number of matched variants ('n_matched'). The
+        chunk's cached MatrixTable, if it was persisted, is released before
+        returning.
 
     See also
     --------
@@ -157,7 +160,8 @@ def _calculate_prs_chunk(
     # on a many-chunk run such as a 1M-variant score. With effect_allele_is_alt
     # and no n_matched the score is the only pass, so persisting would just add
     # a wasted materialization.
-    if not config.effect_allele_is_alt or config.include_n_matched:
+    persisted = not config.effect_allele_is_alt or config.include_n_matched
+    if persisted:
         mt = mt.persist()
 
     # The hom-ref offset -- `2w` summed over the matched rows whose effect
@@ -209,7 +213,16 @@ def _calculate_prs_chunk(
     prs_table = prs_table.rename({"s": config.sample_id_col})
 
     # Drop all global annotations to minimize memory footprint
-    return prs_table.select_globals()
+    prs_table = prs_table.select_globals()
+
+    # Materialize the small per-sample result, then release the chunk's cache.
+    # Nothing else unpersists it, so each persisted chunk would stay pinned in
+    # executor memory for the whole run; across many chunks that accumulates
+    # into memory pressure and spill that erases the persist's benefit.
+    result_df = prs_table.to_pandas()
+    if persisted:
+        _unpersist_quietly(mt)
+    return result_df
 
 
 def _process_chunks(
@@ -268,12 +281,17 @@ def _process_chunks(
                 vds, intervals_to_filter, keep=True
             )
 
-            chunk_prs_table = _calculate_prs_chunk(
-                weights_table=weights_chunk, vds=vds_chunk, config=config
+            # Returns a materialized per-chunk DataFrame, having released its
+            # own cached MatrixTable.
+            partial_dfs.append(
+                _calculate_prs_chunk(
+                    weights_table=weights_chunk, vds=vds_chunk, config=config
+                )
             )
 
-            # Convert the per-chunk Hail Table to a Pandas DataFrame.
-            partial_dfs.append(chunk_prs_table.to_pandas())
+            # The result is materialized, so the persisted weights chunk can
+            # be released too.
+            _unpersist_quietly(weights_chunk)
 
     return partial_dfs
 

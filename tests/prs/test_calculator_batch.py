@@ -173,7 +173,11 @@ class TestBatchHelpers:
         mock_mt.annotate_rows.return_value = mock_mt
         mock_mt.persist.return_value = mock_mt
 
-        mock_mt.select_cols().cols().select_globals.return_value = "FinalTable"
+        # The chunk now renames the sample column and materializes to a
+        # DataFrame before returning.
+        mock_mt.select_cols().cols().select_globals().rename().to_pandas.return_value = (  # noqa: E501
+            "FinalDF"
+        )
 
         # Act
         weights_map = {"score1": MagicMock(), "score2": MagicMock()}
@@ -185,7 +189,9 @@ class TestBatchHelpers:
         )
 
         # Assert
-        assert result == "FinalTable"
+        assert result == "FinalDF"
+        # The persisted chunk is released once its result is materialized.
+        mock_mt.unpersist.assert_called_once()
         mock_build_rows.assert_called_once()
         # One entry term and one row-offset expression per score.
         assert mock_build_entry.call_count == 2
@@ -235,6 +241,8 @@ class TestBatchHelpers:
         mock_mt.rows().aggregate.assert_called_once()
         mock_mt.aggregate_rows.assert_not_called()
         mock_mt.count_rows.assert_not_called()
+        # The persisted chunk is released once its result is materialized.
+        mock_mt.unpersist.assert_called_once()
 
     def test_effect_allele_is_alt_skips_the_offset_pass(self, mocker):
         """`effect_allele_is_alt=True` asserts no variant is REF-effect, so the
@@ -274,7 +282,9 @@ class TestBatchHelpers:
         # single per-sample pass.
         mock_build_offset.assert_not_called()
         mock_mt.rows().aggregate.assert_not_called()
+        # Nothing persisted, so nothing is unpersisted.
         mock_mt.persist.assert_not_called()
+        mock_mt.unpersist.assert_not_called()
         # The per-score entry terms are still built and aggregated once.
         assert mock_build_entry.call_count == 2
         mock_mt.select_cols().cols().select_globals.assert_called()

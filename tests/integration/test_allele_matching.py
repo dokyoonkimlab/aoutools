@@ -73,7 +73,7 @@ def score(vds, raw_weights, positions=None, **config_kwargs):
         keep = hl.set(positions)
         weights = weights.filter(keep.contains(weights.locus.position))
 
-    df = _calculate_prs_chunk(weights, vds, config).to_pandas()
+    df = _calculate_prs_chunk(weights, vds, config)
     prs = dict(zip(df["person_id"], df["prs"], strict=True))
     n_matched = int(df["n_matched"].iloc[0])
     return prs, n_matched
@@ -590,9 +590,11 @@ def test_batch_agrees_with_single(vds_lgt, raw_weights):
     single, _ = score(vds_lgt, raw_weights)
 
     prepared, _ = _prepare_batch_weights_data({"s1": raw_weights}, config)
+    # The chunk calculator now renames the sample column to `sample_id_col`
+    # (default 'person_id') and returns a materialized DataFrame.
     df = _calculate_prs_chunk_batch(
         vds_lgt, {"s1": raw_weights}, prepared, config
-    ).to_pandas()
-    batch = dict(zip(df["s"], df["s1"], strict=True))
+    )
+    batch = dict(zip(df["person_id"], df["s1"], strict=True))
 
     assert batch == single

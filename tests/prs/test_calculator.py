@@ -122,6 +122,9 @@ class TestChunkProcessing:
         # The chunk is materialized once so the offset and score do not each
         # re-run split_multi and the join over the unpersisted MT.
         mock_mt.persist.assert_called_once()
+        # ...and released once the result is materialized, so the cache does
+        # not accumulate across chunks.
+        mock_mt.unpersist.assert_called_once()
         # The hom-ref offset is aggregated over *rows*, not entries -- the only
         # way to reach samples with no entry. Losing this would zero every
         # homozygous-reference sample at a REF-effect variant.
@@ -160,6 +163,8 @@ class TestChunkProcessing:
         mock_mt.aggregate_rows.assert_not_called()
         # Still one materializing action, not two.
         mock_mt.select_cols().cols.assert_called_once()
+        # The persisted chunk is released once its result is materialized.
+        mock_mt.unpersist.assert_called_once()
 
     def test_effect_allele_is_alt_skips_the_offset_pass(self, mocker):
         """`effect_allele_is_alt=True` asserts no variant is REF-effect, so the
@@ -183,7 +188,9 @@ class TestChunkProcessing:
         # No offset pass: the rows reduction is skipped.
         mock_mt.rows().aggregate.assert_not_called()
         mock_mt.aggregate_rows.assert_not_called()
-        # Single pass, so no materialization is needed either.
+        # Single pass, so no materialization is needed either -- and with
+        # nothing persisted, nothing is unpersisted.
         mock_mt.persist.assert_not_called()
+        mock_mt.unpersist.assert_not_called()
         # Only the single per-sample entry aggregation remains.
         mock_mt.select_cols().cols.assert_called_once()
