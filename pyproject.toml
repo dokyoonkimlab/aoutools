@@ -93,6 +93,9 @@ test = "pytest -v -m 'not integration'"
 test-integration = "pytest -v -m integration"
 # One-time per clone, after `pixi install`: install the git pre-commit hook.
 setup-hooks = "pre-commit install"
+# Check the Workbench pins below against a `pip freeze` taken on a Hail
+# Genomic Analysis environment. Takes the freeze file as an argument.
+check-pins = "python scripts/check_workbench_pins.py"
 
 # Runtime dependencies only.
 # Versions are aligned to the All of Us Researcher Workbench genomics runtime:

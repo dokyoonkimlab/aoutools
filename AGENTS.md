@@ -22,7 +22,34 @@ pixi run docs                    # build Sphinx HTML docs
 pixi run lint                    # ruff check + format --check (what CI runs)
 pixi run format                  # ruff format + check --fix (writes)
 pixi run setup-hooks             # install pre-commit hooks; once per clone
+pixi run check-pins FREEZE       # Workbench pins vs. a real `pip freeze`
 ```
+
+### Keeping the Workbench pins honest
+
+The `ci` and `integration` envs pin **exact** versions because they are a
+*replica* of the Workbench genomics runtime — green CI only means something if
+those are the versions researchers run. A range would test whatever the solver
+picked that day, which is neither the Workbench's combination nor a reproducible
+one. Don't widen them; the risk they carry is staleness, not breakage.
+
+CI cannot check its own fidelity — it can't reach a Workbench VM. So before a
+release, run `pip freeze` on a **Hail Genomic Analysis** environment and diff it:
+
+```bash
+pixi run check-pins py_pip_freeze.txt --python-version 3.11.8
+```
+
+`pip freeze` omits the Python version, hence the flag. Exits non-zero on drift.
+Last verified 2026-08-13: all eight pins matched exactly.
+
+Two mismatches are known and **not** fixable, both documented at the pins
+themselves: the Workbench's `pyspark` is Dataproc's own build (`-e
+/usr/lib/spark/python`), same version as the PyPI wheel but not the same
+artifact; and its `protobuf` sits two majors above anything the solver will
+choose, in a combination `google-cloud-storage`'s metadata forbids. A protobuf
+mismatch fails loudly rather than corrupting a score, so it is recorded, not
+chased.
 
 ## Two test tiers
 
