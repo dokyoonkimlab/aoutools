@@ -135,9 +135,14 @@ def _get_pgscatalog_version(bin_dir: Path) -> str | None:
 
 
 def _pgscatalog_constraint(min_version: str) -> str:
-    """Return the version constraint string for pgscatalog.core."""
-    if sys.version_info < (3, 11):
-        return f"pgscatalog.core>={min_version},<1.0.2"
+    """
+    Return the version constraint string for pgscatalog.core.
+
+    This used to cap the version at <1.0.2 on Python 3.10, which is the last
+    release supporting it. The cap is gone because the package now requires
+    3.11 -- and the venv is built with the running interpreter, so its Python
+    is this one. Restore the cap if that floor is ever lowered again.
+    """
     return f"pgscatalog.core>={min_version}"
 
 

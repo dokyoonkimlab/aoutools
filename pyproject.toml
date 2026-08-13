@@ -12,7 +12,10 @@ authors = [
 ]
 description = "A library of tools for analyzing All of Us data."
 readme = "README.md"
-requires-python = ">=3.10"
+# The Workbench genomics runtime is Python 3.11 (3.11.8 as observed), and it is
+# the only Python this package is built or tested against. Claiming 3.10 would
+# advertise support nothing verifies.
+requires-python = ">=3.11"
 keywords = ["all-of-us", "genomics", "bioinformatics", "prs", "hail"]
 
 # This field now points directly to your LICENSE file.
@@ -64,7 +67,7 @@ line-length = 80
 
 [tool.ruff.lint]
 # E/W: pycodestyle. F: real errors (undefined names, unused imports).
-# I: import sorting. UP: pyupgrade (safe — requires-python is >=3.10).
+# I: import sorting. UP: pyupgrade (safe — requires-python is >=3.11).
 # B: bugbear (mutable/shared default args, zip() without strict=, ...).
 select = ["E", "W", "F", "I", "UP", "B"]
 
@@ -135,7 +138,14 @@ pytest-mock = ">=3.14.1,<4"
 # Pinned to the exact versions present on the AoU Workbench Hail runtime so CI
 # is a faithful mirror of the environment researchers actually run. These come
 # from the Workbench `pip freeze`; hail's own metadata confirms they are a
-# mutually-compatible set.
+# mutually-compatible set. Re-checked against a Workbench freeze on 2026-08-13:
+# every pin below still matched exactly, which is the evidence for keeping them
+# exact rather than widening them to ranges.
+#
+# One caveat the version numbers hide: on the Workbench, pyspark is an editable
+# install of Dataproc's own Spark (`-e /usr/lib/spark/python`), not the PyPI
+# wheel. The version agrees, the build does not, and Dataproc's cannot be
+# installed here. So this is the closest mirror available, not an exact one.
 [tool.pixi.feature.ci.target.linux-64.pypi-dependencies]
 hail = "==0.2.135"
 pyspark = "==3.5.3"
@@ -150,6 +160,15 @@ openjdk = "11.*"
 numpy = "==2.0.2"
 pandas = "==2.3.0"
 google-cloud-storage = "==2.13.0"
+# protobuf is deliberately NOT pinned, though it is the widest drift from the
+# Workbench: the solver picks 4.25.3 while the Workbench carries 6.32.0. It
+# cannot be matched. google-cloud-storage 2.13.0 declares protobuf <5, so
+# `protobuf ==6.32.0` is unsolvable alongside the gcs pin above -- the Workbench
+# holds a combination no dependency solver would produce. Matching it would mean
+# moving google-cloud-storage off its verified version, trading an accurate pin
+# on a package this library actually calls for one on a package it never
+# imports. A protobuf mismatch also fails loudly (import or serialization
+# error), so it cannot quietly corrupt a score. Left as measured drift.
 
 # Integration feature: unlike `ci`, this one actually *runs* hail. It starts a
 # local Spark backend, builds a mock VDS and scores it, so the allele-matching
