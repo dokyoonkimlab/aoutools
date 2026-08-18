@@ -10,11 +10,12 @@ While the library is pre-1.0, breaking changes may land in a minor version.
 
 ## [0.2.0] - 2026-08-18
 
-This release corrects how the effect allele is matched against the *All of Us*
-VDS. **Scores computed with 0.1.2 or earlier can change** — for most files they
-move because previously dropped variants now contribute; where the effect allele
-was the reference base, earlier rankings could have been wrong, not merely
-shifted. See **Fixed** below for who is affected.
+This release resolves effect-allele orientation per variant, so a weights file no
+longer has to be harmonized to a single orientation before scoring. **Scores
+computed with 0.1.2 or earlier can change**: rows whose orientation did not match
+the file-wide setting were skipped, so a score was computed from part of the file
+rather than all of it, and sample rankings can shift accordingly. See **Removed**
+and **Fixed** below for what this means for results you already have.
 
 ### Added
 
@@ -32,26 +33,31 @@ shifted. See **Fixed** below for who is affected.
 
 ### Removed
 
-- **(Breaking)** The `PRSConfig` options `split_multi` and `ref_is_effect_allele`.
-  Both selected a scoring path that silently lost data: `split_multi=False` zeroed
-  every homozygous-reference sample at a reference-effect variant, and
-  `ref_is_effect_allele` declared the effect allele's orientation for a whole file
-  when it is really a per-variant property. Passing either now raises `TypeError`.
+- **(Breaking)** The `PRSConfig` options `split_multi`, `ref_is_effect_allele`,
+  and `strict_allele_match`. Passing any of them now raises `TypeError`.
+
+  `ref_is_effect_allele` told the scorer that a whole file used the reference
+  allele as its effect allele — it assumed you had harmonized the file to one
+  orientation and were declaring which one. Nothing needs declaring now:
+  orientation is resolved per variant against the VDS, so a file carrying both
+  orientations, as PGS Catalog files commonly do, scores in full with no setting
+  at all. If you used `ref_is_effect_allele=True` on a file that did meet the
+  assumption, your **rankings were correct** — every score was short by the same
+  constant, so percentile and z-score results still stand.
+
+  `split_multi=False` selected an alternative scoring path that has been removed,
+  and `strict_allele_match` tuned the allele check on that path only, so it went
+  with it. Neither was the default.
 
 ### Fixed
 
-- Reference-effect weights are no longer silently dropped. Effect-allele
-  orientation is now resolved per variant against the VDS reference, and variants
-  are matched on the unordered allele set, so a SNP whose reference base sorts
-  after its alternate, and an already-biallelic non-minimal variant, both match
-  now instead of being skipped (922 of 1,940 variants were dropped for one real
-  score before this fix). Scores that were computed from a biased subset of
-  variants now include the full set.
-- At a multi-allelic site, a reference-effect weight no longer over-credits a
-  sample that carries a *different* alternate allele as though it were homozygous
-  reference. This was per-sample and genotype-dependent, so it could reorder a
-  cohort; anyone scoring reference-effect weights at multi-allelic sites is
-  affected.
+- A weights file no longer has to be uniformly oriented. Effect-allele
+  orientation is resolved per variant against the VDS reference, and variants are
+  matched on the unordered allele set, so a SNP whose reference base sorts after
+  its alternate, and an already-biallelic non-minimal variant, both match now
+  instead of being skipped. Rows that disagreed with the file-wide setting used
+  to be passed over quietly — not scored, and not counted in `n_matched` — which
+  made a partial score hard to notice. Those rows now contribute.
 
 > **Note:** releases 0.1.0–0.1.2 targeted the *All of Us* Researcher Workbench
 > 1.0, which was decommissioned on June 30, 2026. They are kept here for the
