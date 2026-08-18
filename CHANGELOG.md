@@ -8,6 +8,8 @@ While the library is pre-1.0, breaking changes may land in a minor version.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-18
+
 This release corrects how the effect allele is matched against the *All of Us*
 VDS. **Scores computed with 0.1.2 or earlier can change** — for most files they
 move because previously dropped variants now contribute; where the effect allele
@@ -72,7 +74,8 @@ shifted. See **Fixed** below for who is affected.
   weight files and a cost-efficient strategy for calculating PRS directly on the
   *All of Us* VDS, including batch scoring.
 
-[Unreleased]: https://github.com/dokyoonkimlab/aoutools/compare/v0.1.2...dev
+[Unreleased]: https://github.com/dokyoonkimlab/aoutools/compare/v0.2.0...dev
+[0.2.0]: https://github.com/dokyoonkimlab/aoutools/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/dokyoonkimlab/aoutools/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/dokyoonkimlab/aoutools/compare/v0.1...v0.1.1
 [0.1.0]: https://github.com/dokyoonkimlab/aoutools/releases/tag/v0.1
