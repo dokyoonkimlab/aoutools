@@ -33,22 +33,34 @@ or the module fails to import under autodoc and the API reference vanishes.
 ## 3. Tests
 
 `hail` has no macOS wheel, so `pixi run -e ci test` cannot run on a Mac —
-that environment is linux-64 only. **But the suite itself mocks hail**, and only
-needs it to be importable. So a stub is enough to run the full suite locally:
+that environment is linux-64 only. **But the mocked suite only needs hail to be
+importable**, so a stub is enough to run that tier locally:
 
 ```bash
 STUB=$(mktemp -d)
-mkdir -p "$STUB/hail/vds" "$STUB/hailtop"
+mkdir -p "$STUB/hail/vds" "$STUB/hail/utils" "$STUB/hailtop"
 printf 'from unittest.mock import MagicMock\nclass Table: pass\nclass MatrixTable: pass\ndef __getattr__(n): return MagicMock()\n' > "$STUB/hail/__init__.py"
 printf 'from unittest.mock import MagicMock\nclass VariantDataset: pass\ndef __getattr__(n): return MagicMock()\n' > "$STUB/hail/vds/__init__.py"
+printf 'from unittest.mock import MagicMock\ndef __getattr__(n): return MagicMock()\n' > "$STUB/hail/utils/__init__.py"
+printf 'class FatalError(Exception): pass\nclass HailUserError(Exception): pass\n' > "$STUB/hail/utils/java.py"
 printf '' > "$STUB/hailtop/__init__.py"
 printf 'from unittest.mock import MagicMock\ndef __getattr__(n): return MagicMock()\n' > "$STUB/hailtop/fs.py"
 
-PYTHONPATH="$STUB" pixi run -e default python -m pytest tests -q
+PYTHONPATH="$STUB" pixi run -e default python -m pytest tests -q -m 'not integration'
 ```
 
-This reproduces CI exactly today (same test count, same results) and takes under
-a second.
+`-m 'not integration'` is **required**, and is what makes this match CI's
+`pixi run -e ci test`. Without it pytest also collects `tests/integration/`,
+which drives a real Spark backend and cannot run against a stub — you get errors
+that look like a broken suite but only mean the wrong tier was selected.
+
+The stub must cover every hail name the package imports at module scope, not just
+the ones the tests touch. `hail.utils.java.FatalError` is one such import
+(`_calculator_utils.py`), and a missing name fails at **collection**, before any
+test runs. If you see `ModuleNotFoundError: No module named 'hail.<something>'`,
+add it here rather than assuming the suite is broken.
+
+Expect **78 passed, 26 deselected** in about a second, matching CI.
 
 **The stub is a convenience, not the source of truth.** It is not hail: it cannot
 catch anything that depends on real hail behavior — typechecks on expressions,
