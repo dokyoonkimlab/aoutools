@@ -47,10 +47,10 @@ Commit the bump.
 rm -rf dist/
 ```
 
-`dist/` is gitignored and is **not** cleaned by the build. It currently holds
-artifacts from earlier releases. If you build without clearing it, `twine upload
-dist/*` picks up the old files too, PyPI rejects the already-published version,
-and the whole upload fails partway. Always start from an empty `dist/`.
+`dist/` is gitignored and is **not** cleaned by the build, so it accumulates the
+artifacts of every earlier release. If you build without clearing it, `twine
+upload dist/*` picks up those old files too, PyPI rejects the already-published
+version, and the whole upload fails partway. Always start from an empty `dist/`.
 
 ## 4. Build and check
 
@@ -79,10 +79,10 @@ git tag vX.Y.Z
 git push origin vX.Y.Z
 ```
 
-**Note:** `v0.1.2` was published to PyPI on 2026-02-06 but originally shipped
-untagged. The tag has since been backfilled locally at `b03c522` (the commit that
-bumped the version); confirm it is pushed to the remote (`git push origin
-v0.1.2`) if the release predates you.
+**Note:** `v0.1.2` shipped to PyPI on 2026-02-06 untagged. The tag was later
+backfilled at `b03c522`, the commit that bumped the version, and pushed — so the
+tag's date does not match the release date. Nothing to do; this is recorded only
+so the gap does not look like a missing tag.
 
 ## 7. Confirm
 
