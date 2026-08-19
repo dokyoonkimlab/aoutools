@@ -13,8 +13,10 @@ All of Us Researcher Workbench.
 
    **Disclaimer:** This project is **not affiliated with, endorsed by, or
    sponsored by** the *All of Us Research Program*. The software is provided
-   **as is**, without warranty. It is in an **early stage of development**, and
-   its functions, APIs, and signatures may change periodically.
+   **as is, without warranty of any kind**. It is in an **early stage of
+   development**, and its functions, APIs, and signatures may change
+   periodically. You are responsible for checking that any results it produces
+   are correct before relying on them.
 
 Overview
 --------
