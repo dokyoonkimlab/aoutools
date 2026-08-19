@@ -10,6 +10,7 @@ from aoutools._utils.helpers import SimpleTimer
 
 from ._utils import (
     _stage_local_file_to_gcs,
+    _standardize_allele_columns,
     _standardize_chromosome_column,
 )
 
@@ -146,6 +147,13 @@ def _process_prs_weights_table(
         duplicate variants (defined by chromosome, position, and alleles)
         are found in the table.
     """
+    # Normalize allele case first. Everything downstream reads these strings
+    # literally -- the ACGT check just below, the duplicate check further down,
+    # and the VDS join in `_calculator_utils` -- and hail compares strings
+    # case-sensitively. A lowercase file is ordinary input, not invalid input,
+    # so it is uppercased rather than dropped.
+    table = _standardize_allele_columns(table)
+
     if validate_alleles:
         table = _validate_alleles(table)
 

@@ -158,3 +158,59 @@ def test_chromosome_prefix_is_standardized(tmp_path):
     ht = read(path)
 
     assert sorted(ht.chr.collect()) == ["chr1", "chr2"]
+
+
+def test_lowercase_alleles_are_uppercased_on_import(tmp_path):
+    """Allele case is normalized at the door, not treated as invalid data.
+
+    Everything downstream compares allele strings literally -- the ACGT check
+    in `_validate_alleles`, `_check_duplicated_ids`, and the VDS join -- and
+    hail compares strings case-sensitively. A lowercase file used to survive
+    import untouched and then match nothing in the VDS, scoring every sample
+    0.0 in silence. See
+    `test_allele_matching.py::test_lowercase_alleles_score_the_same_as_uppercase`.
+
+    Note this runs with `validate_alleles=True` (the `read` helper above). The
+    normalization deliberately happens *before* that check, so a lowercase row
+    is accepted rather than dropped against `^[ACGT]+$` -- 'a' is a valid base,
+    just written in a different case.
+    """
+    path = write(
+        tmp_path,
+        [
+            "1\t1000\ta\tg\t0.1",
+            "1\t2000\tC\tt\t0.2",  # mixed case within one row
+            "1\t3000\tG\tA\t0.3",  # already uppercase, must pass through
+        ],
+    )
+    table = read(path).collect()
+
+    assert len(table) == 3, "no row may be dropped for being lowercase"
+    assert [(r.effect_allele, r.noneffect_allele) for r in table] == [
+        ("A", "G"),
+        ("C", "T"),
+        ("G", "A"),
+    ]
+
+
+def test_alleles_differing_only_in_case_are_caught_as_duplicates(tmp_path):
+    """The reason the reader normalizes *before* `_check_duplicated_ids`.
+
+    `chr1:1000 a/g` and `chr1:1000 A/G` are the same variant written twice. If
+    case were normalized later -- in `_validate_and_prepare_weights_table`, on
+    the calculator side -- the duplicate check would compare the raw strings,
+    see two distinct `variant_id`s, and pass. The scorer would then collect both
+    rows at the locus and `_match_weight_at_locus`'s `.find` would silently use
+    only the first, dropping a weight with no warning.
+
+    Normalizing at import turns that into the loud `ValueError` it should be.
+    """
+    path = write(
+        tmp_path,
+        [
+            "1\t1000\ta\tg\t0.1",
+            "1\t1000\tA\tG\t0.2",
+        ],
+    )
+    with pytest.raises(ValueError, match="Duplicate variants found"):
+        read(path)

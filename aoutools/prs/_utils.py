@@ -121,3 +121,35 @@ def _standardize_chromosome_column(table: hl.Table) -> hl.Table:
     return table.annotate(
         chr=hl.if_else(chr_str.startswith("chr"), chr_str, "chr" + chr_str)
     )
+
+
+def _standardize_allele_columns(table: hl.Table) -> hl.Table:
+    """
+    Uppercases the 'effect_allele' and 'noneffect_allele' columns.
+
+    Allele case carries no meaning -- 'a' and 'A' are the same base -- but every
+    comparison the library makes on alleles is a literal string comparison, and
+    hail's string equality is case-sensitive. A lowercase weights file would
+    therefore match nothing in the VDS and score every sample 0.0, with no error
+    and no warning, so case is normalized once, up front.
+
+    Applied in two places, because a weights table can enter from two
+    directions: `read_prs_weights` normalizes on import, before the duplicate
+    check reads the allele strings, and `_validate_and_prepare_weights_table`
+    normalizes again for tables a caller builds by hand and passes straight to
+    `calculate_prs`. It is idempotent, so applying it twice costs nothing.
+
+    Parameters
+    ----------
+    table : hail.Table
+        A Hail Table with 'effect_allele' and 'noneffect_allele' columns.
+
+    Returns
+    -------
+    hail.Table
+        A Hail Table whose allele columns are uppercase.
+    """
+    return table.annotate(
+        effect_allele=hl.str(table.effect_allele).upper(),
+        noneffect_allele=hl.str(table.noneffect_allele).upper(),
+    )

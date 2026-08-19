@@ -23,6 +23,12 @@ Task 3 was cancelled rather than built.
 `notebooks/02_validate_scoring_on_aou.ipynb`: at a multi-allelic site, a REF-effect
 weight scored a carrier of a *different* ALT as homozygous reference. See below.
 
+**Finding 8 (fixed).** Found by a pre-release code review on 2026-08-19: alleles
+were never case-normalized, so a lowercase weights file scored **every sample
+0.0** in silence. See below. That review left eight other items open, none of
+them release-blocking — they are collected under "Open review findings" at the
+end of this file.
+
 ---
 
 ## The root cause: a hom-ref sample is not a missing entry
@@ -238,6 +244,55 @@ tripwire guards the passthrough annotation (`or_error` on a locus shift), since
 
 Pinned by `test_a_variant_whose_ref_sorts_after_its_alt_scores` (both
 orientations) and `test_normalizes_a_non_minimal_biallelic_variant`.
+
+---
+
+## ~~Finding 8~~ — allele case was never normalized
+
+**Fixed** (2026-08-19, before the 0.2.0 tag). Found by a pre-release review, not
+by a test. Same signature as Findings 6 and 7 — a clean float, no error, no
+warning — but with the widest blast radius of the three: it zeroed the *entire*
+score rather than a subset of its rows.
+
+Every allele comparison in the library is a literal string comparison, and hail's
+string equality is case-sensitive. Nothing uppercased the alleles. So a weights
+file written `a`/`g` rather than `A`/`G` matched nothing in the VDS at all:
+`filter_rows` emptied the MatrixTable, the entry sum and the hom-ref offset both
+came out zero, and **every sample was written `prs = 0.0`** into a well-formed
+output file.
+
+Nothing announced it. `read_prs_weights` defaults to `validate_alleles=False`, so
+the reader raised nothing, and `include_n_matched` defaults to False, so the one
+number that would have exposed it was never computed. Measured on the mock VDS
+before the fix: `n_matched` 0 instead of 3, all four samples 0.0, zero
+`warnings.warn` and zero `aoutools` WARNING records.
+
+Note the inversion: with `validate_alleles=True` the same file fails *loudly*
+(every row drops against `^[ACGT]+$`, then "all variants were filtered out"). The
+safe behaviour was the non-default one.
+
+**The fix.** `_standardize_allele_columns` (`_utils.py`), applied at **both**
+entry points, which is the load-bearing part:
+
+* `_reader.py`, before `_validate_alleles` *and* before `_check_duplicated_ids`.
+  Ordering matters twice: putting it before the ACGT check makes a lowercase row
+  *accepted* rather than dropped, and putting it before the duplicate check means
+  `a/g` and `A/G` at one locus are caught as the duplicates they are.
+* `_calculator_utils._validate_and_prepare_weights_table`, because
+  `calculate_prs` accepts any hail table — a caller who builds one by hand never
+  passes through the reader.
+
+Normalizing *only* in the calculator would have been worse than incomplete: the
+duplicate check would still compare raw strings, pass the two rows as distinct,
+and then `_match_weight_at_locus`'s `.find` would silently use just the first —
+trading a silent zero for a silently dropped weight.
+
+Pinned by `test_lowercase_alleles_score_the_same_as_uppercase` (scoring),
+`test_lowercase_alleles_are_uppercased_on_import` and
+`test_alleles_differing_only_in_case_are_caught_as_duplicates` (reader).
+Real-data question — do PGS Catalog files ever ship lowercase? — is measured by
+`notebooks/04_validate_public_api_on_aou.ipynb`, section 2. The changelog claims
+they do not; if that run says otherwise, the changelog is wrong.
 
 ---
 

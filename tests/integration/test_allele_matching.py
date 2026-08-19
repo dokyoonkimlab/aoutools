@@ -578,6 +578,60 @@ def test_effect_allele_is_alt_only_shifts_by_a_constant_when_wrong(
 
 
 # --------------------------------------------------------------------------
+# Allele letter case.
+# --------------------------------------------------------------------------
+
+
+def test_lowercase_alleles_score_the_same_as_uppercase(vds_lgt, raw_weights):
+    """CORRECT, and it was a silent all-zero score until 0.2.0.
+
+    Allele case carries no meaning -- 'a' and 'A' are the same base -- but
+    `_match_weight_at_locus` compares the unordered set of the two alleles
+    against the VDS's own, and hail's string equality is case-sensitive.
+    So before the fix `{'a', 'g'}` never equalled `{'A', 'G'}`: no row matched,
+    `filter_rows` emptied the MatrixTable, and both the entry sum and the
+    hom-ref offset came out zero.
+
+    What made it dangerous was the silence. Every sample got `prs = 0.0` in a
+    well-formed output file, with no exception and no warning on either channel
+    -- `read_prs_weights` defaults to `validate_alleles=False`, so the reader
+    did not object, and `include_n_matched` is off by default, so the one number
+    that would have given it away was never computed. Measured before the fix:
+    `n_matched` 0 instead of 3, all four samples 0.0, zero warnings.
+
+    Lowercase alleles are not exotic. PGS Catalog files are uppercase, but
+    `read_prs_weights` exists to take *any* weights file via a custom
+    `column_map`, and plenty of GWAS summary outputs are lowercase.
+
+    Fixed by `_standardize_allele_columns`, applied in two places because a
+    weights table has two entry points: `read_prs_weights` normalizes on import
+    (before `_check_duplicated_ids`, which also compares allele strings
+    literally), and `_validate_and_prepare_weights_table` normalizes again for
+    tables a caller builds by hand and hands straight to `calculate_prs`. This
+    test drives the second path; `tests/integration/test_reader_parsing.py`
+    covers the first.
+    """
+    upper_prs, upper_matched = score(vds_lgt, raw_weights)
+
+    # The same table, alleles lowercased. Derived from the fixture rather than
+    # retyped, so the two runs cannot drift apart.
+    lower_weights = raw_weights.annotate(
+        effect_allele=raw_weights.effect_allele.lower(),
+        noneffect_allele=raw_weights.noneffect_allele.lower(),
+    )
+    lower_prs, lower_matched = score(vds_lgt, lower_weights)
+
+    assert lower_matched == upper_matched, (
+        f"lowercase alleles matched {lower_matched} variants, uppercase "
+        f"matched {upper_matched}. Letter case is not part of a variant's "
+        f"identity, so the same file in either case must match the same rows."
+    )
+    assert lower_prs == upper_prs, (
+        f"lowercase alleles scored {lower_prs}, uppercase scored {upper_prs}"
+    )
+
+
+# --------------------------------------------------------------------------
 # Batch must agree with single.
 # --------------------------------------------------------------------------
 

@@ -13,6 +13,7 @@ from hail.utils.java import FatalError
 from ._config import PRSConfig
 from ._utils import (
     _log_timing,
+    _standardize_allele_columns,
     _standardize_chromosome_column,
 )
 
@@ -140,6 +141,14 @@ def _validate_and_prepare_weights_table(
             raise TypeError(f"Column '{col}' has incorrect type.")
 
     weights_table = _standardize_chromosome_column(weights_table)
+    # Alleles are matched against the VDS by literal string comparison, which
+    # is case-sensitive, so a lowercase file would match nothing and score
+    # every sample 0.0 in silence. `read_prs_weights` already normalizes, but
+    # `calculate_prs` accepts any table, so a caller who builds one by hand
+    # never passes through the reader. Pinned by
+    # tests/integration/test_allele_matching.py
+    # ::test_lowercase_alleles_score_the_same_as_uppercase
+    weights_table = _standardize_allele_columns(weights_table)
 
     if config.log_transform_weight:
         weights_table = weights_table.annotate(
