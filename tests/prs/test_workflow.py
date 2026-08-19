@@ -9,6 +9,8 @@ import logging
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 from aoutools.prs._workflow import calculate_pgs
 
 
@@ -85,3 +87,27 @@ def test_all_files_unreadable_returns_none(mocker, caplog):
     assert result is None
     batch.assert_not_called()
     assert "No valid scoring files could be read" in caplog.text
+
+
+def test_a_bad_output_path_raises_before_anything_is_downloaded(mocker):
+    """The check must come first, not last.
+
+    `calculate_prs_batch` validates `output_path` too, but it runs at the very
+    end -- so a mistyped path used to surface only after every scoring file had
+    been fetched from the PGS Catalog and parsed. `download_pgs` must not even
+    be reached.
+    """
+    download = mocker.patch("aoutools.prs._workflow.download_pgs")
+    read = mocker.patch("aoutools.prs._workflow.read_prs_weights")
+    batch = mocker.patch("aoutools.prs._workflow.calculate_prs_batch")
+
+    with pytest.raises(ValueError, match="must be a Google Cloud Storage"):
+        calculate_pgs(
+            vds=MagicMock(),
+            output_path="results.csv",  # no gs:// prefix
+            pgs=["PGS000746"],
+        )
+
+    download.assert_not_called()
+    read.assert_not_called()
+    batch.assert_not_called()

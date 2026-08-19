@@ -380,6 +380,33 @@ class TestInitHail:
         assert "gcs_requester_pays_configuration" not in init_kwargs
         mock_hl.default_reference.assert_called_once_with("GRCh38")
 
+    def test_explicit_billing_project_suppresses_the_warning(
+        self, monkeypatch, mocker, recwarn
+    ):
+        """Passing the project must not warn that there is no project.
+
+        The warning tells the user that reading the VDS will fail and then
+        recommends `init_hail(gcs_requester_pays_configuration=...)`. Firing it
+        at someone who has just made exactly that call reads as the library
+        being broken, and it is false -- the kwarg goes straight to `hl.init`.
+        """
+        monkeypatch.delenv("GOOGLE_PROJECT", raising=False)
+        monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
+        # No Workbench CLI either, so nothing can discover a project.
+        mocker.patch(
+            "aoutools._workbench._project_from_wb_cli", return_value=None
+        )
+
+        with patch("aoutools._workbench.hl") as mock_hl:
+            init_hail(gcs_requester_pays_configuration="explicit-project")
+
+        assert not [w for w in recwarn if issubclass(w.category, UserWarning)]
+        _, init_kwargs = mock_hl.init.call_args
+        assert (
+            init_kwargs["gcs_requester_pays_configuration"]
+            == "explicit-project"
+        )
+
     def test_caller_can_override_the_defaults(self, monkeypatch):
         monkeypatch.setenv("GOOGLE_PROJECT", "my-project")
 

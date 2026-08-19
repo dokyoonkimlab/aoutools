@@ -501,7 +501,9 @@ Read from source, not reproduced: only Finding 8 was confirmed by running it. Th
 failure scenarios below are derived by reading, so treat them as strong leads
 rather than measured facts until each has a test.
 
-Ordered by severity.
+Ordered by severity. Two were fixed before the 0.2.0 tag, both chosen because
+they touch no scoring code and so could not invalidate the Workbench notebook
+validation; they are struck through rather than deleted.
 
 - **A score that matches zero variants is never warned about.** The general net
   under which Finding 8 hid. Any whole-file mismatch — wrong build, wrong contig
@@ -521,27 +523,34 @@ Ordered by severity.
   layers disagree about what makes a variant unique, and the unordered match was
   introduced deliberately (Finding 7), so the duplicate check is the side that
   should move. `_reader.py:89`, `_calculator_utils.py:238`.
-- **`init_hail` warns spuriously when billing is passed explicitly.**
+- ~~**`init_hail` warns spuriously when billing is passed explicitly.**~~ **Fixed 2026-08-19.**
   `get_google_project()` ignores `kwargs`, so on an image where neither env var
   is set and `wb` is absent, `init_hail(gcs_requester_pays_configuration="proj")`
   warns "Hail is being initialized WITHOUT a requester-pays billing project …
   reading the VDS will fail" — which is false, and the warning then recommends
   the exact call the user just made. Guard on `"gcs_requester_pays_configuration"
   not in kwargs`. `_workbench.py:485`.
-- **`download_pgs` enumerates its download directory non-recursively, but every
-  reader of that directory is recursive.** `_workflow.py:107`, notebook 04, and
-  the benchmark notebook all use `rglob("*.txt.gz")`; the `gs://` upload branch
-  uses `Path(temp_dir).iterdir()`. If `pgscatalog-download` nests its output,
-  nested files are never uploaded and any directory entry hits
-  `blob.upload_from_filename` as an `IsADirectoryError` — which is not a
-  `GoogleCloudError`, so the surrounding handler does not catch it. Both layouts
-  cannot be right. Only notebook 04 exercises this path. `_downloader.py:388`.
+- **The `gs://` branch of `download_pgs` is covered by nothing at all.**
+  `tests/prs/test_downloader.py` tests only the venv bootstrap and the CLI
+  install; notebook 04 and notebook 05 both pass a *local* `outdir`. So roughly
+  35 lines — the temp-dir download, the `storage.Client()` upload, the thread
+  pool, the error path — have never executed. `_downloader.py:374-410`.
+
+  Originally logged here as a likely *bug*, on the grounds that the upload
+  enumerates flat (`Path(temp_dir).iterdir()`) while `_workflow.py:107` and
+  notebook 04 read with recursive `rglob`. **That was wrong**, and notebook 05
+  settles it: it globs `outdir` flat for `PGS<id>*.txt.gz` and raises if it finds
+  nothing, and it passes. The download output is flat, so `iterdir()` is correct
+  and the `rglob`s elsewhere are merely defensive. What remains is the absence of
+  coverage, plus one hardening nit: a directory entry would reach
+  `blob.upload_from_filename` as an `IsADirectoryError`, which is not a
+  `GoogleCloudError` and so slips past the handler.
 - **Degenerate weights rows are dropped with no count.** `_group_weights_by_locus`
   filters `effect_allele != noneffect_allele` silently, while `_validate_alleles`
   and the unmapped-coordinate filter both count and WARN. A user reconciling
   `n_matched` against their file's row count finds an unexplained gap. AGENTS.md
   puts "variants dropped for bad alleles" at WARNING. `_calculator_utils.py:207`.
-- **`calculate_pgs` validates `output_path` last.** The `gs://` check lives in
+- ~~**`calculate_pgs` validates `output_path` last.**~~ **Fixed 2026-08-19.** The `gs://` check lives in
   `calculate_prs_batch`, so a malformed path raises only after every scoring file
   has been downloaded and parsed — minutes of network and Spark work thrown away
   for a typo the first line could have caught. `_workflow.py:98`.

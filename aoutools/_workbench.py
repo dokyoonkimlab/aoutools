@@ -480,7 +480,10 @@ def init_hail(reference: str = "GRCh38", **kwargs) -> None:
     google_project = get_google_project()
     if google_project:
         kwargs.setdefault("gcs_requester_pays_configuration", google_project)
-    else:
+    elif "gcs_requester_pays_configuration" not in kwargs:
+        # Only warn when there is genuinely no billing project. Passing one
+        # explicitly is the documented escape hatch, and warning anyway told
+        # the user that the exact call they had just made would fail.
         warnings.warn(
             "No Google project could be found (GOOGLE_PROJECT, "
             "GOOGLE_CLOUD_PROJECT, and the Workbench CLI were all tried), so "

@@ -80,6 +80,16 @@ def calculate_pgs(
     # across calls; build a fresh one per call instead.
     config = PRSConfig() if config is None else config
 
+    # Checked here, not just in `calculate_prs_batch` at the end: otherwise a
+    # mistyped path is only reported after every scoring file has been
+    # downloaded and parsed, throwing away minutes of work for a typo the first
+    # line can catch.
+    if not output_path.startswith("gs://"):
+        raise ValueError(
+            "The 'output_path' must be a Google Cloud Storage (GCS) "
+            "path, starting with 'gs://'."
+        )
+
     # Define the column mapping for standard PGS Catalog scoring files
     pgs_column_map = {
         "chr": "hm_chr",
