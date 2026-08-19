@@ -538,7 +538,7 @@ def read_prscs(file_path: str, **kwargs) -> hl.Table:
     """
     Read a header-less weights file with the fixed PRS-CS column layout.
 
-    .. deprecated:: 0.1.3
+    .. deprecated:: 0.2.0
         The name suggests this reader is tied to the PRS-CS tool, but it only
         applies one fixed column layout. Call :func:`read_prs_weights` directly
         with ``header=False`` and the column map shown below. ``read_prscs``
