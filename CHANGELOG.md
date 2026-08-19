@@ -60,12 +60,21 @@ and **Fixed** below for what this means for results you already have.
   made a partial score hard to notice. Those rows now contribute.
 
 - Alleles written in lowercase are now read correctly. Allele comparisons are
-  case-sensitive, so a weights file using `a`/`g` rather than `A`/`G` matched no
-  variant at all and returned a score of zero for every sample — with no error
-  and no warning, because the allele check and the matched-variant count are
-  both off by default. Alleles are now standardized to uppercase as a file is
-  read. PGS Catalog files are uppercase and are unaffected; this matters for
-  weights files you assemble yourself.
+  case-sensitive, so a weights file using `a`/`g` rather than `A`/`G` did not
+  match any variant. What you saw depended on a setting: with allele validation
+  off — the default — the file loaded and every sample scored zero, with no
+  error and no warning; with it on, as `calculate_pgs` always uses, the
+  lowercase rows were dropped as invalid, and a wholly lowercase file was
+  rejected outright. Alleles are now standardized to uppercase as a file is
+  read, so all of these now score, and both the scores and `n_matched` change
+  accordingly. PGS Catalog files are uppercase and are unaffected; this matters
+  for weights files you assemble yourself.
+
+  One consequence worth knowing: a file listing the same variant twice at one
+  position, differing only in letter case (`a`/`g` and `A`/`G`), is now reported
+  as a duplicate and rejected. Previously the lowercase row was quietly ignored
+  and the file scored. The two rows genuinely conflict, so this is now an error
+  you can see rather than a choice made for you.
 
 > **Note:** releases 0.1.0–0.1.2 targeted the *All of Us* Researcher Workbench
 > 1.0, which was decommissioned on June 30, 2026. They are kept here for the

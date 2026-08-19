@@ -541,7 +541,17 @@ validation; they are struck through rather than deleted.
   weight is silently dropped and `n_matched` counts the locus once. The two
   layers disagree about what makes a variant unique, and the unordered match was
   introduced deliberately (Finding 7), so the duplicate check is the side that
-  should move. `_reader.py:89`, `_calculator_utils.py:238`.
+  should move. **Sort the pair inside `_check_duplicated_ids` only** — sorting
+  anywhere in the match path is Finding 7 coming back. `_reader.py:89`,
+  `_calculator_utils.py:238`.
+
+  Finding 8 changed the shape of this slightly, in both directions. Same
+  orientation, different case (`a/g` + `A/G`) is now *caught*, because
+  normalization runs before the duplicate check. But opposite orientations
+  spelled in different cases (`a/g` + `G/A`) now both reach the locus array,
+  where before the lowercase row could not match anything — so `.find` picks
+  arbitrarily between two contradictory rows where it previously used the
+  uppercase one deterministically. A wider mouth on the same hole, not a new one.
 - ~~**`init_hail` warns spuriously when billing is passed explicitly.**~~ **Fixed 2026-08-19.**
   `get_google_project()` ignores `kwargs`, so on an image where neither env var
   is set and `wb` is absent, `init_hail(gcs_requester_pays_configuration="proj")`
