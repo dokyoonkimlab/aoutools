@@ -474,8 +474,27 @@ names a specific AoU data release and must be bumped when a new one lands.**
 - **`main` is behind `dev`.** All current work is on `dev`. Clean fast-forward
   whenever wanted.
 - **No strand harmonization exists anywhere.** Weights are assumed to be on the same
-  strand and build as the VDS. Palindromic variants (A/T, C/G) are undetected. Out of
-  scope for Tasks 2-3, but it is the most likely cause of a non-matching weights row.
+  strand and build as the VDS. **Deliberately out of scope** as of 0.2.0, and now
+  documented as such in `docs/source/scoring_method.rst` ("What aoutools does not
+  do").
+
+  The two halves fail differently, which is the part worth keeping straight. A
+  non-palindromic strand flip does not match, so it costs power, not correctness,
+  and `include_n_matched` makes it visible -- it is the most likely cause of a
+  non-matching weights row. A **palindromic** variant (A/T, C/G) reads the same
+  from either strand, so the unordered allele-set match succeeds *whether or not
+  the strands agree*; if they do not, the effect allele is the other one and that
+  variant's weight is applied with the wrong sign for every sample, with nothing
+  in the output to show it. Same silent-wrong-result class as Finding 8, but it
+  cannot be settled from the allele strings at all -- resolving it needs allele
+  frequencies, and is unreliable near 0.5, which is why guessing is worse than
+  declining.
+
+  **Planned for 0.2.1: detect and warn, do not harmonize.** Counting palindromic
+  variants at load time, and rows that would match under complement, turns most of
+  this from silent into visible for the cost of one pass over the (small) weights
+  table. Actually flipping them is a much larger commitment -- it needs a frequency
+  source and a policy for the ambiguous band -- and should not be bolted on.
 - **`_standardize_chromosome_column` and scaffold contigs.** The vectorized rewrite
   (`0c6f467`) prefixes every unprefixed contig, so GRCh38 scaffold/alt contigs
   (`KI270728.1`) become `chrKI270728.1` and make `hl.locus` throw. Fails loudly, and

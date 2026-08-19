@@ -405,19 +405,43 @@ Both the chunk equality and the batch-equals-single equality are tested.
 What ``aoutools`` does **not** do
 ---------------------------------
 
-Two things are deliberately left to you, because guessing at them would do more
-harm than good:
+One thing is deliberately left to you, because guessing at it would do more harm
+than good: making sure your weights are on the same **genome build** (GRCh38) and
+the same **DNA strand** as the *All of Us* data.
 
-- **Strand and genome build.** The library assumes your weights are on the same
-  DNA strand and the same genome build (GRCh38) as the *All of Us* data. It does
-  not detect or correct a strand flip.
-- **Palindromic variants.** Variants whose two alleles are strand-symmetric
-  (``A/T`` and ``C/G``) are not flagged. If your weights and the data disagree on
-  strand for such a variant, the alleles alone cannot reveal it, so you must
-  resolve it upstream.
+DNA has two strands, and the same variant can be written from either one. A study
+reporting a variant as ``A/G`` and *All of Us* recording it as ``T/C`` are
+describing the same thing, because ``A`` pairs with ``T`` and ``G`` pairs with
+``C``. ``aoutools`` compares the letters as they are written, so it does not
+recognise those two as the same variant.
 
-Make sure your weights file matches the reference build and strand before
-scoring.
+That has two consequences, and the difference between them matters:
+
+- **For most variants, a strand mismatch is visible.** The letters do not match,
+  so the variant contributes nothing, exactly as if it were missing from the
+  data. You lose variants, but the score you get is not wrong. Setting
+  ``include_n_matched=True`` reports how many variants were actually used, and a
+  count well below what you expected is the signal to check the strand.
+
+- **For palindromic variants, a strand mismatch is invisible, and the score is
+  wrong.** A variant whose alleles are ``A/T`` or ``C/G`` reads the same from
+  either strand: ``A`` pairs with ``T``, so an ``A/T`` variant written from the
+  other strand is still ``A/T``. The letters match either way, so the variant
+  **is** counted -- but if the two strands really do disagree, the effect allele
+  is the other one, and that variant's weight is added in the wrong direction for
+  everyone. Nothing in the output shows this. The matched-variant count looks
+  perfectly normal.
+
+  The alleles alone cannot settle it. Telling the two situations apart means
+  comparing how common the effect allele is in your weights file with how common
+  it is in the cohort, which is unreliable whenever that frequency is near half.
+  Rather than guess, and risk reversing a variant's effect without saying so, the
+  library leaves this to you.
+
+So: confirm that your weights are on GRCh38 and on the reference strand before
+scoring. If you cannot confirm the strand for a palindromic variant, the safe
+choice is to remove it from the file -- losing one variant costs far less than
+counting it backwards.
 
 
 In short
