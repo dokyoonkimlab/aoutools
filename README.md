@@ -10,7 +10,12 @@
 aoutools is a Python library designed to simplify common analysis tasks on the
 All of Us Researcher Workbench.
 
-The initial release focuses on the `aoutools.prs` submodule, which offers
+**aoutools targets Researcher Workbench 2.0.** Version 0.2.0 is the first
+release for it, adding helpers (`init_hail`, `get_vds_path`) that wire up the
+new VDS location and Hail setup. Releases 0.1.x targeted Workbench 1.0, which
+was decommissioned on June 30, 2026.
+
+The library currently focuses on the `aoutools.prs` submodule, which offers
 convenient functions for:
 
 1.  **Reading PRS Weights Files:** A flexible reader that can handle various

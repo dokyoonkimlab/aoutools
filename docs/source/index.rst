@@ -22,7 +22,7 @@ Overview
 --------
 
 aoutools aims to provide a suite of high-level functions designed to make All
-of Us data analyses more accessible. The initial release focuses on the
+of Us data analyses more accessible. The library currently focuses on the
 ``aoutools.prs`` submodule for calculating Polygenic Risk Scores (PRS).
 
 .. toctree::
