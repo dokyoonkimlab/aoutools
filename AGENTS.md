@@ -65,7 +65,7 @@ are `1.0`, so `prs` *is* the copy count and the assertions read as arithmetic.
 The load-bearing fact it pins: **a hom-ref sample has no entry in `variant_data`**,
 so hail's entry-stream filter hides it from every aggregator — no missing-genotype
 default can reach it. Confirmed on the real AoU VDS
-(`notebooks/validate_scoring_on_aou.ipynb`, check 1); it is why the non-split
+(`notebooks/02_validate_scoring_on_aou.ipynb`, check 1); it is why the non-split
 scoring path was removed.
 
 Several tests deliberately pin **known bugs** so a fix is reviewable; each says so
@@ -85,33 +85,33 @@ will not catch you.
 Offline tiers have holes only the real Workbench fills. **Not run by CI** — a human
 runs these on a Hail Genomic Analysis environment before a release.
 
-- `validate_scoring_on_aou.ipynb` — the real-data counterpart of
+- `02_validate_scoring_on_aou.ipynb` — the real-data counterpart of
   `tests/integration/`. Each `conftest.py` fixture is a *claim about the shape of
   the real VDS*; if a claim is false the mock suite stays green and the scores are
   wrong. So this **finds a real variant of each shape** and checks the library
   against copy numbers from `hl.vds.to_dense_mt` — an oracle that never calls
   `min_rep`, `split_multi`, or `aoutools`. Turned up **Finding 6**; check 1 pins
   the hom-ref-has-no-entry fact on real data.
-- `validate_public_api_on_aou.ipynb` — `calculate_prs`, `calculate_prs_batch`, and
+- `04_validate_public_api_on_aou.ipynb` — `calculate_prs`, `calculate_prs_batch`, and
   `calculate_pgs` all hard-raise unless `output_path` starts with `gs://`, so **no
   offline test reaches them**, nor the PGS Catalog download nor
   `_stage_local_file_to_gcs`. The only check on all of it.
-- `validate_synthetic_control_on_aou.ipynb` — the **positive-control** tier. It
+- `03_validate_synthetic_control_on_aou.ipynb` — the **positive-control** tier. It
   **builds** a synthetic VDS and weights file with every scoring path present by
   construction, computes the expected PRS independently (pure Python, cross-checked
   against a `to_dense_mt` oracle), and drives the **public API** against it — so it
   checks the user-facing functions and the `gs://` round-trip on a *known answer*,
-  which `validate_public_api_on_aou.ipynb` (real PGS files, no ground truth)
+  which `04_validate_public_api_on_aou.ipynb` (real PGS files, no ground truth)
   cannot. Ships a diagnostic toolkit that decomposes a discrepancy per variant and
   classifies its signature (constant offset / hom-ref-only / genotype-dependent /
   whole-variant drop) onto the matching `TODO.md` finding. Its data is synthetic
   real-hail, so every cell except the `gs://` ones also runs offline under
   `pixi run -e integration`.
-- `verify_split_multi_downcoding.ipynb` — pins the fact **Finding 6** rests on:
+- `01_verify_split_multi_downcoding.ipynb` — pins the fact **Finding 6** rests on:
   `split_multi` relabels every *other* ALT as REF, so a carrier of a different ALT
   reports `0/0` at a split row, indistinguishable from a true hom-ref. This is why
   two dosages are needed (see Architecture).
-- `measure_minrep_locus_shift.ipynb` — records why Finding 5 is closed (locus-shift
+- `05_measure_minrep_locus_shift.ipynb` — records why Finding 5 is closed (locus-shift
   rate is zero in AoU); re-run if the tripwire below fires.
 
 `aoutools.init_hail()` and `aoutools.get_vds_path()` (`_workbench.py`) keep the
@@ -230,7 +230,7 @@ non-ref count from the **pre-split** local genotype, which survives the split �
 `_entry_contribution` counts `n_non_ref` for REF-effect rows and
 `GT.n_alt_alleles()` for ALT-effect rows. Both branches are load-bearing; using
 either everywhere turns integration tests red. This was Finding 6
-(`verify_split_multi_downcoding.ipynb` pins the downcoding).
+(`01_verify_split_multi_downcoding.ipynb` pins the downcoding).
 
 Two knobs were removed for silently losing data: `split_multi=False` selected a
 path that zeroed every hom-ref sample at a REF-effect variant (reordering the
@@ -249,7 +249,7 @@ variant that reaches `split_multi`: the per-chunk interval prefilter is built at
 *weights* locus, so `filter_intervals` drops a variant whose row sits upstream of
 its minrep'd, GWAS-named locus *before* it is split — making a downstream-named
 shift a silent `n_matched` shortfall, not a raise. `tests/integration/` and
-`notebooks/validate_synthetic_control_on_aou.ipynb` pin the raise through the
+`notebooks/03_validate_synthetic_control_on_aou.ipynb` pin the raise through the
 `_calculate_prs_chunk` seam (which splits the unfiltered VDS) for that reason. Don't
 set `filter_changed_loci=True` to silence it.
 

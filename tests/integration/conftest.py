@@ -52,7 +52,7 @@ VARIANTS = [
     # suffix GGGC and reduces it to A/G at this same locus -- which is how a
     # GWAS names it. Trimming a shared *prefix* would instead move the locus;
     # that case does not occur in All of Us (measured: 0 of 6,001,424 ALTs; see
-    # notebooks/measure_minrep_locus_shift.ipynb).
+    # notebooks/05_measure_minrep_locus_shift.ipynb).
     #
     # S2 carries the SNP, S3 is homozygous for it. No weights row in WEIGHTS
     # names this locus -- the test supplies its own.
@@ -79,7 +79,7 @@ VARIANTS = [
     # row that names it minimally (A/G) -- it scores 0, silently. chr1:6000
     # covers the multi-allelic version, which splitting happens to normalize;
     # this covers the biallelic version, which it does not. Found on the real
-    # VDS by validate_scoring_on_aou.ipynb (chr1:1409159).
+    # VDS by 02_validate_scoring_on_aou.ipynb (chr1:1409159).
     ("chr1:8500", ["AAAG", "GAAG"], {"S2": [0, 1], "S3": [1, 1]}),
 ]
 
@@ -229,7 +229,7 @@ def vds_locus_shifting():
     single such row would make every other test raise.
 
     No variant of this shape exists in All of Us: 0 of 6,001,424 ALT alleles
-    in a 10Mb window shifted (`notebooks/measure_minrep_locus_shift.ipynb`).
+    in a 10Mb window shifted (`notebooks/05_measure_minrep_locus_shift.ipynb`).
     """
     entries = [
         {

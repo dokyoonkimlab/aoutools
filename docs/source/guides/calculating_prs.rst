@@ -185,8 +185,8 @@ reference base after all, every sample's score is lowered by the same amount --
 so the ranking of samples, which is what a PRS is normally used for, does not
 change, but the absolute score values shift. To check whether your file
 qualifies, count how many of your variants are reference-effect (the
-``validate_public_api_on_aou.ipynb`` notebook does this); if that count is zero,
-turning this on changes only the speed, not the scores.
+``04_validate_public_api_on_aou.ipynb`` notebook does this); if that count is
+zero, turning this on changes only the speed, not the scores.
 
 
 Tip: Batch PRS Calculation

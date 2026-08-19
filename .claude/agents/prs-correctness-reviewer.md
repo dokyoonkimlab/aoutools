@@ -55,7 +55,7 @@ at a row. A hom-ref sample is **absent**, and hail *filters absent entries out o
 the entry stream* — aggregators never visit them, so **no default of any kind can
 be applied to them**. This is not a mock artifact; it is confirmed on the real
 All of Us VDS (94 of 200 samples had zero entries across a 5-variant window; see
-`notebooks/validate_scoring_on_aou.ipynb`, check 1).
+`notebooks/02_validate_scoring_on_aou.ipynb`, check 1).
 
 Any scheme that tries to give a hom-ref sample a dosage by handling a *missing
 genotype* is therefore unreachable. A missing genotype is a **no-call** — an
@@ -131,7 +131,7 @@ silent drop either.
 
 No variant of the prefix-trimming shape exists in All of Us: **0 of 6,001,424 ALT
 alleles** in a 10Mb window, 21% of whose rows were multi-allelic
-(`notebooks/measure_minrep_locus_shift.ipynb`). So the raising default is not a
+(`notebooks/05_measure_minrep_locus_shift.ipynb`). So the raising default is not a
 crash risk — it is a tripwire against a future VDS release changing variant
 representation. A diff that sets `filter_changed_loci=True` to "fix a crash" is
 trading a loud failure for silently dropped variants. Reject it.

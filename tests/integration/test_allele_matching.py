@@ -94,7 +94,7 @@ def test_hom_ref_samples_are_absent_from_the_entry_stream(vds_lgt):
     and what Task 2's constant-offset fix has to work around.
 
     Confirmed on the real All of Us VDS: 94 of 200 samples had zero entries
-    across a 5-variant window. See `notebooks/validate_scoring_on_aou.ipynb`,
+    across a 5-variant window. See `notebooks/02_validate_scoring_on_aou.ipynb`,
     check 1.
     """
     vd = vds_lgt.variant_data
@@ -198,7 +198,7 @@ def test_normalizes_a_non_minimal_biallelic_variant(vds_lgt):
 
     Without that step this row stays `AAAG/GAAG`, the `A/G` weights key never
     matches, and every carrier scores 0 with no error -- exactly the FAIL that
-    validate_scoring_on_aou.ipynb turned up on the real VDS (chr1:1409159).
+    02_validate_scoring_on_aou.ipynb turned up on the real VDS (chr1:1409159).
     """
     raw = hl.Table.parallelize(
         [{"chr": "chr1", "pos": 8500, "effect_allele": "G",
@@ -391,7 +391,7 @@ def test_a_locus_shifting_variant_raises_rather_than_vanishing(
     We keep the raising default on purpose. **No variant of this shape exists
     in All of Us**: 0 of 6,001,424 ALT alleles in a 10Mb window of chr1
     shifted, and 21% of those rows were multi-allelic
-    (`notebooks/measure_minrep_locus_shift.ipynb`). So the exception is not a
+    (`notebooks/05_measure_minrep_locus_shift.ipynb`). So the exception is not a
     crash risk -- it is a tripwire. If a future VDS release ever changes the
     variant representation, the run fails loudly instead of quietly dropping
     variants and producing a plausible, wrong score.

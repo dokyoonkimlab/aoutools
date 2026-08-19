@@ -300,7 +300,7 @@ def _split_multi_with_total_dosage(
     #
     # No variant of the prefix-trimming shape exists in All of Us: 0 of
     # 6,001,424 ALT alleles in a 10Mb window, 21% of whose rows were
-    # multi-allelic (notebooks/measure_minrep_locus_shift.ipynb). So this is
+    # multi-allelic (notebooks/05_measure_minrep_locus_shift.ipynb). So this is
     # not a crash risk, it is a tripwire: if a future VDS release changes
     # variant representation we fail loudly, instead of scoring silently
     # wrong. Pinned by

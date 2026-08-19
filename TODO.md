@@ -9,7 +9,7 @@ things wrong.
 
 The core findings were then **confirmed on the real All of Us VDS** on the
 Workbench. Those numbers are quoted inline below — they are not from the mock.
-The live check on current code is `notebooks/validate_scoring_on_aou.ipynb`
+The live check on current code is `notebooks/02_validate_scoring_on_aou.ipynb`
 (check 1 re-confirms the hom-ref fact); the earlier
 `verify_hom_ref_dosage.ipynb`, which measured the now-removed non-split path,
 has been retired.
@@ -20,7 +20,7 @@ turned out **not to occur in All of Us at all** -- measured, not assumed -- so
 Task 3 was cancelled rather than built.
 
 **Finding 6 (fixed).** Found while writing the *oracle* for
-`notebooks/validate_scoring_on_aou.ipynb`: at a multi-allelic site, a REF-effect
+`notebooks/02_validate_scoring_on_aou.ipynb`: at a multi-allelic site, a REF-effect
 weight scored a carrier of a *different* ALT as homozygous reference. See below.
 
 ---
@@ -85,7 +85,7 @@ meaningless.
 ## ~~Finding 5~~ — the interval prefilter vs. minrep
 
 **Severity was medium-high. CLOSED: the problem does not occur in All of Us.**
-Measured with `notebooks/measure_minrep_locus_shift.ipynb`, run on the Workbench.
+Measured with `notebooks/05_measure_minrep_locus_shift.ipynb`, run on the Workbench.
 
 `hl.min_rep` trims shared bases, and it matters *which end*:
 
@@ -141,7 +141,7 @@ Two guards were added instead:
   prefilter case above: a variant whose row sits upstream of its minrep'd,
   GWAS-named locus is dropped by `filter_intervals` *before* the split — a silent
   `n_matched` shortfall, not a raise. So `tests/integration/` and
-  `notebooks/validate_synthetic_control_on_aou.ipynb` pin the raise through the
+  `notebooks/03_validate_synthetic_control_on_aou.ipynb` pin the raise through the
   `_calculate_prs_chunk` seam, which splits the unfiltered VDS. Setting
   `filter_changed_loci` to `True` would convert the tripwire into precisely the
   silent data loss this whole document is about.
@@ -363,22 +363,22 @@ could break — which is the other reason the raising default stays armed.
 These notebooks close the holes the offline tiers cannot reach. **CI does not run
 them** — a human runs them on the Workbench before a release.
 
-- `notebooks/validate_scoring_on_aou.ipynb` — the real-data counterpart of
+- `notebooks/02_validate_scoring_on_aou.ipynb` — the real-data counterpart of
   `tests/integration/`. Finds a **real variant of each fixture's shape** in the
   real VDS and checks the library against copy numbers counted from
   `hl.vds.to_dense_mt` — an oracle that never calls `min_rep`, `split_multi`, or
   `aoutools`. Writing that oracle is what found **Finding 6**.
-- `notebooks/validate_public_api_on_aou.ipynb` — `calculate_prs`,
+- `notebooks/04_validate_public_api_on_aou.ipynb` — `calculate_prs`,
   `calculate_prs_batch`, and `calculate_pgs` all hard-raise without a `gs://`
   output path, so no offline test reaches them, nor the PGS download, nor
   `_stage_local_file_to_gcs`. This is the only check on any of it.
-- `notebooks/validate_synthetic_control_on_aou.ipynb` — the **positive-control**
+- `notebooks/03_validate_synthetic_control_on_aou.ipynb` — the **positive-control**
   tier. **Builds** a synthetic VDS in which every scoring path is present by
   construction, computes the expected PRS independently (pure Python, cross-
   checked against a `to_dense_mt` oracle), and drives the **public API** against
   that known answer — so it checks the user-facing functions and the `gs://`
   round-trip, which the real-PGS notebook cannot verify against ground truth.
-- `notebooks/measure_minrep_locus_shift.ipynb` — the measurement behind
+- `notebooks/05_measure_minrep_locus_shift.ipynb` — the measurement behind
   Finding 5: locus-shift rate is **0 of 6,001,424 ALTs** in AoU. Re-run it if the
   split-step tripwire ever fires on a future VDS release.
 

@@ -61,10 +61,10 @@ optional
         allele turns out to be the reference after all, every score is short by
         the same constant, so absolute PRS values shift but rankings,
         percentiles, and z-scores are unaffected and the cohort is never
-        reordered. To check whether your file qualifies, count how many of your
-        variants are reference-effect (the ``validate_public_api_on_aou.ipynb``
-        notebook does this); if that count is zero, setting this True changes
-        the speed but not the scores.
+        reordered. To check whether your file qualifies, count how many of
+        your variants are reference-effect (the
+        ``04_validate_public_api_on_aou.ipynb`` notebook does this); if that
+        count is zero, setting this True changes the speed but not the scores.
     """
 
     chunk_size: int = 20000
