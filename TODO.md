@@ -487,3 +487,72 @@ names a specific AoU data release and must be bumped when a new one lands.**
   exercise chunking at a more realistic scale. Note they are uniformly
   `A1 = effect = ALT`, which is a PRS-CS output convention — not a property of
   weights files in general (Finding 4).
+
+---
+
+## Open review findings (2026-08-19)
+
+From a pre-release read of everything 0.2.0 ships (`v0.1.2...HEAD` over
+`aoutools/**`). **None predates 0.2.0's work** — all are pre-existing in code the
+release carries forward, and none blocks the tag. The ninth finding from that
+pass, allele case, is Finding 8 above and is fixed.
+
+Read from source, not reproduced: only Finding 8 was confirmed by running it. The
+failure scenarios below are derived by reading, so treat them as strong leads
+rather than measured facts until each has a test.
+
+Ordered by severity.
+
+- **A score that matches zero variants is never warned about.** The general net
+  under which Finding 8 hid. Any whole-file mismatch — wrong build, wrong contig
+  naming, a GRCh37 file — yields zero matched rows, and `calculate_prs` writes
+  `0.0` for every sample and returns the output path as if it had worked. This
+  contradicts the project's own logging policy: AGENTS.md assigns "an empty
+  result" to WARNING. Worth fixing *before* the individual causes, because it
+  catches the ones nobody has thought of yet. `_calculator.py:205`,
+  `_calculator_batch.py`.
+- **The duplicate check is orientation-sensitive; the matcher is not.** Finding 8
+  closed the case half of this. The orientation half is still open:
+  `_check_duplicated_ids` builds `chr_pos_noneffect_effect`, so a file listing
+  `chr1:100 A/G` and `chr1:100 G/A` produces two distinct ids and passes
+  validation. `_group_weights_by_locus` then collects both into one locus array
+  and `_match_weight_at_locus`'s `.find` returns only the first — the second
+  weight is silently dropped and `n_matched` counts the locus once. The two
+  layers disagree about what makes a variant unique, and the unordered match was
+  introduced deliberately (Finding 7), so the duplicate check is the side that
+  should move. `_reader.py:89`, `_calculator_utils.py:238`.
+- **`init_hail` warns spuriously when billing is passed explicitly.**
+  `get_google_project()` ignores `kwargs`, so on an image where neither env var
+  is set and `wb` is absent, `init_hail(gcs_requester_pays_configuration="proj")`
+  warns "Hail is being initialized WITHOUT a requester-pays billing project …
+  reading the VDS will fail" — which is false, and the warning then recommends
+  the exact call the user just made. Guard on `"gcs_requester_pays_configuration"
+  not in kwargs`. `_workbench.py:485`.
+- **`download_pgs` enumerates its download directory non-recursively, but every
+  reader of that directory is recursive.** `_workflow.py:107`, notebook 04, and
+  the benchmark notebook all use `rglob("*.txt.gz")`; the `gs://` upload branch
+  uses `Path(temp_dir).iterdir()`. If `pgscatalog-download` nests its output,
+  nested files are never uploaded and any directory entry hits
+  `blob.upload_from_filename` as an `IsADirectoryError` — which is not a
+  `GoogleCloudError`, so the surrounding handler does not catch it. Both layouts
+  cannot be right. Only notebook 04 exercises this path. `_downloader.py:388`.
+- **Degenerate weights rows are dropped with no count.** `_group_weights_by_locus`
+  filters `effect_allele != noneffect_allele` silently, while `_validate_alleles`
+  and the unmapped-coordinate filter both count and WARN. A user reconciling
+  `n_matched` against their file's row count finds an unexplained gap. AGENTS.md
+  puts "variants dropped for bad alleles" at WARNING. `_calculator_utils.py:207`.
+- **`calculate_pgs` validates `output_path` last.** The `gs://` check lives in
+  `calculate_prs_batch`, so a malformed path raises only after every scoring file
+  has been downloaded and parsed — minutes of network and Spark work thrown away
+  for a typo the first line could have caught. `_workflow.py:98`.
+- **Staged weights files are never cleaned up.** `_stage_local_file_to_gcs` copies
+  into `$WORKSPACE_BUCKET/data/temp_prs_data/` and nothing deletes it. Keyed on
+  basename, so repeat runs overwrite rather than accumulate, but distinct files
+  pile up permanently in a directory whose name says otherwise — and the user
+  pays to store them. `_utils.py:82`.
+- **The reader re-reads the source file about three times before persisting.**
+  `_validate_alleles` calls `count()` either side of its filter and
+  `_process_prs_weights_table` calls it again for `count_before_filter`, all
+  before `persist()`. Each one re-runs the import from GCS and re-parses. On a
+  375k-row PGS Catalog file that is three full reads where one would do; persist
+  earlier. `_reader.py:40`.
