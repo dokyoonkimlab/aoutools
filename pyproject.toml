@@ -141,9 +141,9 @@ pytest-mock = ">=3.14.1,<4"
 # Pinned to the exact versions present on the AoU Workbench Hail runtime so CI
 # is a faithful mirror of the environment researchers actually run. These come
 # from the Workbench `pip freeze`; hail's own metadata confirms they are a
-# mutually-compatible set. Re-checked against a Workbench freeze on 2026-08-13:
-# every pin below still matched exactly, which is the evidence for keeping them
-# exact rather than widening them to ranges.
+# mutually-compatible set. Re-checked against a Workbench freeze on 2026-08-18,
+# before the 0.2.0 release: every pin below still matched exactly, which is the
+# evidence for keeping them exact rather than widening them to ranges.
 #
 # One caveat the version numbers hide: on the Workbench, pyspark is an editable
 # install of Dataproc's own Spark (`-e /usr/lib/spark/python`), not the PyPI

@@ -41,7 +41,8 @@ pixi run check-pins py_pip_freeze.txt --python-version 3.11.8
 ```
 
 `pip freeze` omits the Python version, hence the flag. Exits non-zero on drift.
-Last verified 2026-08-13: all eight pins matched exactly.
+Last verified 2026-08-18, before the 0.2.0 release: all eight pins matched
+exactly.
 
 Two mismatches are known and **not** fixable, both documented at the pins
 themselves: the Workbench's `pyspark` is Dataproc's own build (`-e

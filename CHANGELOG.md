@@ -8,7 +8,7 @@ While the library is pre-1.0, breaking changes may land in a minor version.
 
 ## [Unreleased]
 
-## [0.2.0] - 2026-08-18
+## [0.2.0] - 2026-08-19
 
 This release resolves effect-allele orientation per variant, so a weights file no
 longer has to be harmonized to a single orientation before scoring. **Scores
