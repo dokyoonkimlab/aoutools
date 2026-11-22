@@ -206,6 +206,17 @@ together: `_split_multi_with_total_dosage` annotates `canonical_alleles` (the
 `min_rep` of every row), and `_match_weight_at_locus` matches on the unordered
 allele **set**. Both shapes are pinned in `tests/integration/`.
 
+**Except indels, whose direction the allele set does not fix.** A minimal indel's
+alleles are nested, so the deletion `CA -> C` (`[CA, C]`) and the insertion
+`CA -> CAA` (`[C, CA]`) are the same set. An unordered match put one weight on
+both rows, and the two cancelled (Finding 9). The split annotates `is_indel` and
+`indel_both_directions` (from the pre-split site), and an indel is matched **in
+order** (non-effect = REF) at a both-directions site or under
+`effect_allele_is_alt`. `skip_ambiguous_indels` zeroes such weights instead. The
+data cannot settle this; only the file's labeling can, so do not "simplify" it
+back to a plain set match. `_check_one_row_per_weight` raises if any weight lands
+on two rows. Pinned by `tests/integration/test_indel_direction.py`.
+
 The match is also **shuffle-free**, so it is not a keyed join.
 `_group_weights_by_locus` groups the small weights into one array per locus;
 `weights_by_locus[mt.locus]` is a key-*prefix* join (no shuffle), then alleles

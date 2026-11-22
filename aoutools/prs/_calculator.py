@@ -1,6 +1,7 @@
 """PRS calculator"""
 
 import logging
+from collections import Counter
 
 import hail as hl
 import hailtop.fs as hfs
@@ -9,14 +10,18 @@ import pandas as pd
 from aoutools._utils.helpers import SimpleTimer
 
 from ._calculator_utils import (
+    _check_one_row_per_weight,
     _create_1bp_intervals,
     _entry_contribution,
     _group_weights_by_locus,
+    _indel_row_counts,
+    _log_indel_tally,
     _match_weight_at_locus,
     _orient_weight_and_offset,
     _prepare_samples_to_keep,
     _prepare_weights_for_chunking,
     _split_multi_with_total_dosage,
+    _tally_indel_counts,
     _unpersist_quietly,
 )
 from ._config import PRSConfig
@@ -77,12 +82,14 @@ def _prepare_mt_split(
         # Match weights by locus (a shuffle-free key-prefix join) and then by
         # alleles locally against the row's minimal `canonical_alleles`. Keying
         # the weights on the full (locus, alleles) instead would force the MT to
-        # be re-keyed to minimal alleles -- a shuffle of every entry. See
+        # be re-keyed to minimal alleles -- a shuffle of every entry. Indels are
+        # matched with their direction in mind, so an insertion is never also
+        # scored as the deletion of the same letters. See
         # `_group_weights_by_locus` and `_match_weight_at_locus`.
         weights_by_locus = _group_weights_by_locus(weights_table)
         mt = mt.annotate_rows(
             weights_info=_match_weight_at_locus(
-                weights_by_locus[mt.locus].variants, mt.canonical_alleles
+                weights_by_locus[mt.locus].variants, mt, config
             )
         )
 
@@ -117,7 +124,10 @@ def _prepare_mt_split(
 
 
 def _calculate_prs_chunk(
-    weights_table: hl.Table, vds: hl.vds.VariantDataset, config: PRSConfig
+    weights_table: hl.Table,
+    vds: hl.vds.VariantDataset,
+    config: PRSConfig,
+    tally: Counter | None = None,
 ) -> pd.DataFrame:
     """
     Calculates a Polygenic Risk Score (PRS) for a single chunk of variants.
@@ -135,6 +145,10 @@ def _calculate_prs_chunk(
     config : PRSConfig
         A configuration object specifying settings such as `include_n_matched`
         and `sample_id_col`.
+    tally : collections.Counter, optional
+        A running count of indels of uncertain direction, added to in place so
+        the caller can report it once for the whole run (`_log_indel_tally`).
+        Only filled when a row reduction runs (see below).
 
     Returns
     -------
@@ -175,28 +189,39 @@ def _calculate_prs_chunk(
     # harmonized GWAS summaries -- then no variant is REF-effect, the offset is
     # identically zero, and its reduction is skipped. With no `n_matched` the
     # per-sample score is then the only pass. Orientation is still resolved per
-    # row, so if the assertion is wrong the only effect is that every score is
-    # short by the same constant (`2w` per REF-effect variant): absolute values
-    # shift, but rankings, percentiles, and z-scores are exact, and the cohort
-    # is never reordered. `n_matched` is a separate row reduction, so requesting
+    # row, so if the assertion is wrong for a SNP the only effect is that every
+    # score is short by the same constant (`2w` per REF-effect variant):
+    # absolute values shift, but rankings, percentiles, and z-scores are exact.
+    # Indels are the exception: under this flag they match only in the stated
+    # direction (`_match_weight_at_locus`), so a REF-effect indel is left out,
+    # which can reorder the cohort. `n_matched` is a separate row reduction, so
+    # requesting
     # it keeps a second pass (and the persist above) even with this set.
+    #
+    # The same row reduction also counts the indels of uncertain direction for
+    # the run's log, and checks that no weight was matched to two rows. Both
+    # ride along for free; with the single-pass fast path they are skipped.
     total_offset = 0.0
     n_matched = None
-    if not config.effect_allele_is_alt:
+    if persisted:
         rows = mt.rows()
-        row_agg_exprs = {"total_offset": hl.agg.sum(rows.hom_ref_offset)}
-        if config.include_n_matched:
-            # `mt` is filtered to matched rows (`filter_rows` in
-            # `_prepare_mt_split`), so a plain row count *is* the number of
-            # variants in common. A genotype-aware `hl.agg.count()` over entries
-            # would undercount, since hom-ref samples have no entry.
-            row_agg_exprs["n_matched"] = hl.agg.count()
+        # `mt` is filtered to matched rows (`filter_rows` in
+        # `_prepare_mt_split`), so every row is a match, and a row count *is*
+        # the number of variants in common. A genotype-aware `hl.agg.count()`
+        # over entries would undercount, since hom-ref samples have no entry.
+        row_agg_exprs = _indel_row_counts(
+            rows, rows.weights_info, hl.bool(True), config
+        )
+        if not config.effect_allele_is_alt:
+            row_agg_exprs["total_offset"] = hl.agg.sum(rows.hom_ref_offset)
         row_aggs = rows.aggregate(hl.struct(**row_agg_exprs))
-        total_offset = row_aggs.total_offset
+        _check_one_row_per_weight(row_aggs, "the score")
+        _tally_indel_counts(tally, row_aggs, "prs")
+        if not config.effect_allele_is_alt:
+            total_offset = row_aggs["total_offset"]
         if config.include_n_matched:
-            n_matched = row_aggs.n_matched
-    elif config.include_n_matched:
-        n_matched = mt.rows().aggregate(hl.agg.count())
+            # Excludes indels `skip_ambiguous_indels` left out.
+            n_matched = row_aggs["n_scored"]
 
     # One pass over entries: the per-sample entry sum plus the row-level offset
     # constant (a scalar, identical for every sample; zero when the offset pass
@@ -263,6 +288,7 @@ def _process_chunks(
     PRSConfig : A configuration class that holds parameters for PRS calculation.
     """
     partial_dfs = []
+    tally = Counter()
     for i in range(n_chunks):
         # Always show chunk processing time to track progress
         with _log_timing(f"Processing chunk {i + 1}/{n_chunks}", True):
@@ -285,7 +311,10 @@ def _process_chunks(
             # own cached MatrixTable.
             partial_dfs.append(
                 _calculate_prs_chunk(
-                    weights_table=weights_chunk, vds=vds_chunk, config=config
+                    weights_table=weights_chunk,
+                    vds=vds_chunk,
+                    config=config,
+                    tally=tally,
                 )
             )
 
@@ -293,6 +322,7 @@ def _process_chunks(
             # be released too.
             _unpersist_quietly(weights_chunk)
 
+    _log_indel_tally(tally, config)
     return partial_dfs
 
 
@@ -380,6 +410,10 @@ def calculate_prs(
     against the VDS's own REF/ALT. The PGS Catalog does not harmonize the effect
     allele onto the ALT, so a file mixing both is the normal case.
 
+    The exception is an indel at a site that carries both the insertion and the
+    deletion of the same letters: its two alleles fit either variant, so the
+    file's labeling decides. See `PRSConfig.skip_ambiguous_indels`.
+
     Parameters
     ----------
     weights_table : hail.Table
@@ -410,8 +444,9 @@ def calculate_prs(
 
         - A sample ID column (as configured in `config.sample_id_col`)
         - `prs`: The calculated PRS value
-        - `n_matched` (optional): The number of variants used to calculate
-          the score, included if `config.include_n_matched` is True.
+        - `n_matched` (optional): The number of weights rows used to
+          calculate the score, the same for every sample; included if
+          `config.include_n_matched` is True.
 
     Raises
     ------

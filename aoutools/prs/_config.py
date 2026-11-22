@@ -37,9 +37,11 @@ optional
         Useful when weights are odds ratios (OR), since PRS assumes additive
         effects on the log-odds scale.
     include_n_matched : bool, default False
-        If True, adds a column 'n_matched' with the number of variants matched
-        between weights table and VDS. This option has a performance cost and
-        should be used only when necessary.
+        If True, adds a column 'n_matched' with the number of weights rows that
+        were found in the genomic data and scored. It describes the weights
+        file, not each person: the value is the same for every sample, and a
+        person whose genotype is missing at a variant still counts it. This
+        option has a performance cost and should be used only when necessary.
     sample_id_col : str, default 'person_id'
         The column name to use for sample IDs in the final output table.
     detailed_timings : bool, default False
@@ -56,15 +58,44 @@ optional
         roughly halve the run time. (Requesting ``include_n_matched`` needs its
         own pass, so it keeps the second pass even with this set.)
 
-        Leave it False (the default) unless you are sure: with it False the
-        score is exact for any file. If you set it True and a variant's effect
-        allele turns out to be the reference after all, every score is short by
-        the same constant, so absolute PRS values shift but rankings,
-        percentiles, and z-scores are unaffected and the cohort is never
-        reordered. To check whether your file qualifies, count how many of
-        your variants are reference-effect (the
+        Setting it also tells the scorer which way round each **indel** is
+        written, which the data alone cannot (see ``skip_ambiguous_indels``):
+        an indel is then scored only in the direction the file gives, with the
+        non-effect allele as the reference.
+
+        Leave it False (the default) unless you are sure. With it False the
+        score is exact for any file, except for the indels described under
+        ``skip_ambiguous_indels``. If you set it True and a single-letter
+        variant's effect allele turns out to be the reference after all, every
+        score is short by the same constant, so absolute PRS values shift but
+        rankings, percentiles, and z-scores are unaffected and the cohort is
+        never reordered. An indel whose effect allele turns out to be the
+        reference is left out of the score instead. To check whether your file
+        qualifies, count how many of your variants are reference-effect (the
         ``04_validate_public_api_on_aou.ipynb`` notebook does this); if that
         count is zero, setting this True changes the speed but not the scores.
+    skip_ambiguous_indels : bool, default False
+        What to do with an indel whose direction cannot be told from the data.
+
+        Some sites in *All of Us* carry both an insertion and a deletion of the
+        same letters. At a site whose reference is ``CA``, the deletion
+        ``CA`` -> ``C`` and the insertion ``C`` -> ``CA`` (written ``CA`` ->
+        ``CAA`` in the data) both reduce to the same two alleles, ``C`` and
+        ``CA``. A weights row naming ``C`` and ``CA`` therefore fits either
+        variant, and only the file's own labeling says which one it means.
+
+        With False (the default), the non-effect allele is read as the
+        reference, the usual convention of harmonized GWAS summaries: a row
+        with effect allele ``CA`` and non-effect allele ``C`` scores the
+        insertion. Set it True to leave such indels out of the score instead,
+        when your file does not follow that convention -- for example a PGS
+        Catalog file, whose effect allele may be either the reference or the
+        alternate allele. Either way, the log reports how many weights were
+        affected. Only indels at sites that carry both directions are
+        affected; every other variant is scored the same either way.
+
+        It has no effect when ``effect_allele_is_alt`` is True, which already
+        states that the non-effect allele is the reference.
     """
 
     chunk_size: int = 20000
@@ -77,3 +108,4 @@ optional
     sample_id_col: str = "person_id"
     detailed_timings: bool = False
     effect_allele_is_alt: bool = False
+    skip_ambiguous_indels: bool = False

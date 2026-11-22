@@ -166,17 +166,37 @@ class TestMatchWeightAtLocus:
     def test_matches_on_the_unordered_allele_set(self, mocker):
         """The match must succeed whichever way round the GWAS wrote the pair --
         orientation is resolved later, from the REF. So it compares allele
-        *sets*, not ordered pairs."""
+        *sets*, not ordered pairs. (Indels are the exception, matched in a fixed
+        direction where the data cannot settle it; that is checked against real
+        genotypes in tests/integration/test_indel_direction.py.)"""
         mock_hl = mocker.patch("aoutools.prs._calculator_utils.hl", MagicMock())
         variants = MagicMock()
-        canonical = MagicMock()
+        mt = MagicMock()
 
-        _match_weight_at_locus(variants, canonical)
+        _match_weight_at_locus(variants, mt, PRSConfig())
 
         # The target is the canonical alleles as a set, and the locus's
         # variants array is searched with `find` (not indexed by order).
-        mock_hl.set.assert_any_call(canonical)
+        mock_hl.set.assert_any_call(mt.canonical_alleles)
         variants.find.assert_called_once()
+
+    def test_skip_ambiguous_indels_zeroes_rather_than_drops(self, mocker):
+        """`skip_ambiguous_indels` zeroes the weight instead of returning no
+        match, so the row survives for the row pass to count it."""
+        mock_hl = mocker.patch("aoutools.prs._calculator_utils.hl", MagicMock())
+        variants = MagicMock()
+        mt = MagicMock()
+
+        _match_weight_at_locus(
+            variants, mt, PRSConfig(skip_ambiguous_indels=True)
+        )
+
+        variants.find.return_value.annotate.assert_called_once_with(weight=0.0)
+        mock_hl.if_else.assert_any_call(
+            mt.indel_both_directions,
+            variants.find.return_value.annotate.return_value,
+            variants.find.return_value,
+        )
 
 
 class TestOrientWeightAndOffset:

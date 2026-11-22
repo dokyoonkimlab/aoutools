@@ -199,7 +199,8 @@ def _group_weights_by_locus(ht: hl.Table) -> hl.Table:
     necessarily need to correspond to the minor allele/alternative allele", and
     harmonized (HmPOS) files remap coordinates while preserving the original
     allele columns. A single file routinely carries both orientations, which the
-    unordered allele-set match in `_match_weight_at_locus` handles directly.
+    unordered allele-set match in `_match_weight_at_locus` handles directly --
+    except for indels, whose direction the allele set does not fix; see there.
 
     Parameters
     ----------
@@ -227,25 +228,212 @@ def _group_weights_by_locus(ht: hl.Table) -> hl.Table:
 
 def _match_weight_at_locus(
     variants_at_locus: hl.expr.ArrayExpression,
-    canonical_alleles: hl.expr.ArrayExpression,
+    mt: hl.MatrixTable | hl.Table,
+    config: PRSConfig,
 ) -> hl.expr.StructExpression:
     """
     Picks the weights row at a locus whose alleles match this variant.
 
     `variants_at_locus` is the `variants` array from `_group_weights_by_locus`
-    (missing if the locus carries no weight); `canonical_alleles` is the row's
-    minimal `[ref, alt]` from `_split_multi_with_total_dosage`. Returns the
+    (missing if the locus carries no weight). `mt` supplies the row fields
+    `_split_multi_with_total_dosage` annotates: `canonical_alleles` (the row's
+    minimal `[ref, alt]`), `is_indel`, and `indel_both_directions`. Returns the
     matching `struct(effect_allele, noneffect_allele, weight)`, or missing.
+    `.find` on a missing array is missing, so a locus with no weights simply
+    yields no match.
 
-    The match is on the unordered allele **set**, so it succeeds whichever way
-    round the GWAS wrote the pair -- the orientation itself is resolved later,
-    per row, from `canonical_alleles[0]` (the REF). `.find` on a missing array
-    is missing, so a locus with no weights simply yields no match.
+    **Single-letter and other non-indel variants** match on the unordered allele
+    **set**, so they match whichever way round the GWAS wrote the pair; the
+    orientation is resolved later, per row, from `canonical_alleles[0]` (the
+    REF). This is safe because at most one of the two alleles can be the
+    reference sequence at the position, so the pair has one reading.
+
+    **Indels** are different. In minimal form one allele is a prefix of the
+    other, and both can be prefixes of the reference sequence: at a site whose
+    reference reads `CA...`, the deletion `CA -> C` reduces to `[CA, C]` and the
+    insertion `CA -> CAA` reduces to `[C, CA]`. The same two alleles, opposite
+    order -- two different variants. An unordered match takes a `C`/`CA`
+    weights row onto *both* rows. The deletion row is then scored as if its
+    effect allele were the REF, and the sum is `2w - w * (copies of the site's
+    other ALTs)`: the intended variant cancels out entirely, with no error.
+    Neither the data nor the reference genome can say which variant the row
+    means; only the file's own labeling can. So:
+
+    * with `effect_allele_is_alt`, the file has stated that its non-effect
+      allele is the REF, and every indel matches only in that order;
+    * otherwise, where the site carries **both** directions
+      (`indel_both_directions`), the non-effect allele is read as the REF --
+      the usual convention of harmonized summaries -- so the weight lands on
+      exactly one row. With `skip_ambiguous_indels` it is instead matched with
+      its weight zeroed, which leaves it out of the score while still letting
+      the row pass count it (see `_indel_row_counts`);
+    * where the site carries only **one** direction, the unordered match is
+      kept: the row may be a genuine reference-effect indel, and dropping it
+      would lose every such variant from files that list them that way. That
+      reading is reported, since it is wrong for a file that always lists the
+      reference as the non-effect allele.
+
+    Pinned by tests/integration/test_indel_direction.py.
     """
+    canonical_alleles = mt.canonical_alleles
+    ref, alt = canonical_alleles[0], canonical_alleles[1]
     target = hl.set(canonical_alleles)
-    return variants_at_locus.find(
-        lambda v: hl.set([v.effect_allele, v.noneffect_allele]) == target
+
+    if config.effect_allele_is_alt:
+        ordered_only = mt.is_indel
+    else:
+        ordered_only = mt.indel_both_directions
+
+    match = variants_at_locus.find(
+        lambda v: hl.if_else(
+            ordered_only,
+            (v.noneffect_allele == ref) & (v.effect_allele == alt),
+            hl.set([v.effect_allele, v.noneffect_allele]) == target,
+        )
     )
+
+    if config.skip_ambiguous_indels and not config.effect_allele_is_alt:
+        match = hl.if_else(
+            mt.indel_both_directions, match.annotate(weight=0.0), match
+        )
+    return match
+
+
+def _skips_ambiguous_indels(config: PRSConfig) -> bool:
+    """Whether `skip_ambiguous_indels` actually applies under this config."""
+    return config.skip_ambiguous_indels and not config.effect_allele_is_alt
+
+
+def _indel_row_counts(
+    rows: hl.Table,
+    weights_info: hl.expr.StructExpression,
+    matched: hl.expr.BooleanExpression,
+    config: PRSConfig,
+) -> dict[str, hl.expr.Expression]:
+    """
+    Row aggregations that report, and guard, the indel-direction handling.
+
+    Meant to be folded into the chunk's existing rows-only aggregation, so they
+    add no pass over the data. `matched` must be True exactly for the rows that
+    carry a weight (always True after the single-score path's row filter).
+
+    * `n_scored` -- matched rows that contribute to the score: every matched
+      row, less the ones `skip_ambiguous_indels` zeroed. This is `n_matched`.
+    * `n_ambiguous_indel` -- weights at a site carrying both directions of an
+      indel. Each lands on exactly one row (`_match_weight_at_locus`), so this
+      counts weights. They were read with the non-effect allele as the REF, or
+      skipped, depending on `skip_ambiguous_indels`.
+    * `n_reversed_indel` -- indel weights matched with their effect allele as
+      the REF at a site carrying only that one direction. Right if the file
+      lists those indels that way round; the wrong variant if the file always
+      gives the REF as the non-effect allele.
+    * `n_distinct_weights` -- the number of distinct weights rows behind the
+      matched rows. It must equal the matched row count; a weights row matched
+      to two VDS rows is scored twice, and `_check_one_row_per_weight` raises.
+    """
+    both = rows.indel_both_directions
+    skipped = both if _skips_ambiguous_indels(config) else hl.bool(False)
+    return {
+        "n_matched_rows": hl.agg.count_where(matched),
+        "n_scored": hl.agg.count_where(matched & ~skipped),
+        "n_ambiguous_indel": hl.agg.count_where(matched & both),
+        "n_reversed_indel": hl.agg.count_where(
+            matched
+            & rows.is_indel
+            & ~both
+            & (weights_info.effect_allele == rows.canonical_alleles[0])
+        ),
+        "n_distinct_weights": hl.len(
+            hl.agg.filter(
+                matched,
+                hl.agg.collect_as_set(
+                    hl.struct(locus=rows.locus, weight=weights_info)
+                ),
+            )
+        ),
+    }
+
+
+def _check_one_row_per_weight(counts, score_label: str) -> None:
+    """
+    Raises if any weights row was matched to more than one VDS row.
+
+    `counts` is the localized result of `_indel_row_counts`. A weights row that
+    lands on two rows is scored twice -- the shape of the insertion/deletion
+    bug `_match_weight_at_locus` closes. Nothing in the current match should
+    allow it, so this is a tripwire, not an expected path: it would fire if a
+    future data release stored one variant as two rows at the same position.
+    Like the locus-shift tripwire in `_split_multi_with_total_dosage`, it
+    raises rather than score silently wrong.
+    """
+    n_rows = int(counts["n_matched_rows"])
+    n_weights = int(counts["n_distinct_weights"])
+    if n_rows != n_weights:
+        raise RuntimeError(
+            f"{n_rows} genomic rows matched only {n_weights} weights for "
+            f"{score_label}: at least one weight would be counted twice. The "
+            "genomic data stores the same variant more than once at one "
+            "position. Please report this to the aoutools maintainers."
+        )
+
+
+def _tally_indel_counts(tally, counts, score_label: str) -> None:
+    """Adds one chunk's indel counts to a running per-score tally."""
+    if tally is None:
+        return
+    for key in ("n_ambiguous_indel", "n_reversed_indel"):
+        tally[(score_label, key)] += int(counts[key])
+
+
+def _log_indel_tally(tally, config: PRSConfig) -> None:
+    """
+    Reports, once per run, how indels of uncertain direction were handled.
+
+    `tally` is the running total `_tally_indel_counts` built across chunks, so
+    each message appears once per score rather than once per chunk.
+    """
+    # Under `effect_allele_is_alt` the file has stated every indel's direction,
+    # so nothing here was a guess and there is nothing to report.
+    if not tally or config.effect_allele_is_alt:
+        return
+    labels = sorted({label for label, _ in tally})
+    for label in labels:
+        n_ambiguous = tally[(label, "n_ambiguous_indel")]
+        n_reversed = tally[(label, "n_reversed_indel")]
+        if n_ambiguous and _skips_ambiguous_indels(config):
+            logger.info(
+                "%s: left out %d indels whose direction the data cannot "
+                "settle (the site carries both the insertion and the "
+                "deletion), as skip_ambiguous_indels requests.",
+                label,
+                n_ambiguous,
+            )
+        elif n_ambiguous:
+            # A WARNING, not INFO: this reading is an assumption about the
+            # file, and a PGS Catalog file need not follow it.
+            logger.warning(
+                "%s: %d indels sit at sites that carry both the insertion and "
+                "the deletion of the same letters. Each was scored as the "
+                "variant whose reference allele is the file's non-effect "
+                "allele. If your file always lists indels that way, set "
+                "effect_allele_is_alt=True to say so (this also silences "
+                "this message); if it does not, set "
+                "skip_ambiguous_indels=True to leave them out.",
+                label,
+                n_ambiguous,
+            )
+        if n_reversed:
+            logger.warning(
+                "%s: %d indels were scored with their effect allele as the "
+                "reference allele, because that is the only direction the "
+                "data carries at those sites. This is right if your file lists "
+                "these indels that way. If your file always gives the "
+                "reference as the non-effect allele, these name variants that "
+                "are not in the data: set effect_allele_is_alt=True to leave "
+                "them out.",
+                label,
+                n_reversed,
+            )
 
 
 def _split_multi_with_total_dosage(
@@ -284,8 +472,11 @@ def _split_multi_with_total_dosage(
     hail.MatrixTable
         The split `variant_data`, still keyed on its own (possibly non-minimal)
         `(locus, alleles)`, with a `GT` entry field (downcoded, per-ALT), an
-        `n_non_ref` entry field (total, pre-split), and a `canonical_alleles`
-        row field holding the minimal `[ref, alt]` the join matches on.
+        `n_non_ref` entry field (total, pre-split), a `canonical_alleles`
+        row field holding the minimal `[ref, alt]` the join matches on, and
+        two row flags for the indel match: `is_indel` (the minimal alleles are
+        nested) and `indel_both_directions` (the site also carries the same
+        two alleles in the opposite order). See `_match_weight_at_locus`.
     """
     vd = vds.variant_data
 
@@ -295,6 +486,25 @@ def _split_multi_with_total_dosage(
     # the site -- exactly what downcoding is about to destroy.
     genotype = vd.LGT if "LGT" in vd.entry.dtype else vd.GT
     vd = vd.annotate_entries(n_non_ref=genotype.n_alt_alleles())
+
+    # Splitting also loses which variants share a site, and indel matching
+    # needs it. At a site whose reference reads `CA...`, the deletion
+    # `CA -> C` and the insertion `CA -> CAA` reduce to `[CA, C]` and
+    # `[C, CA]` -- the same two alleles, opposite order -- so one `C`/`CA`
+    # weights row fits both split rows. `_match_weight_at_locus` must know when
+    # the site carries both, and after the split each row sees only itself. So
+    # record every ALT's minimal pair now, while the site is one row; it is a
+    # row field, so it rides through the split. Pairs whose locus moves are left
+    # out: the split raises on them below anyway.
+    ref = vd.alleles[0]
+    vd = vd.annotate_rows(
+        _site_allele_pairs=hl.set(
+            vd.alleles[1:]
+            .map(lambda alt: hl.min_rep(vd.locus, [ref, alt]))
+            .filter(lambda mr: mr.locus == vd.locus)
+            .map(lambda mr: mr.alleles)
+        )
+    )
 
     # `filter_changed_loci` is left at its default of False, which *raises* if
     # `hl.min_rep` moves a variant's locus. That is deliberate; do not set it
@@ -348,7 +558,26 @@ def _split_multi_with_total_dosage(
             "See _split_multi_with_total_dosage; do not silence this."
         )
     )
-    return svd.annotate_rows(canonical_alleles=canonical_alleles)
+    svd = svd.annotate_rows(canonical_alleles=canonical_alleles)
+
+    # In minimal form an indel's alleles are nested -- one is a prefix of the
+    # other -- and that is exactly when both can be prefixes of the reference,
+    # so the pair alone does not say which is the REF. A SNP or other
+    # substitution can never be nested, and the reversed pair can never occur
+    # at its site (the REF base is fixed), so both flags are False for it.
+    # A row with no ALT (a REF-only row, which split VDS data may hold) gets
+    # False for both, and `hl.if_else` keeps `[1]` from being read on it.
+    c_ref, c_alt = svd.canonical_alleles[0], svd.canonical_alleles[1]
+    has_alt = hl.len(svd.canonical_alleles) == 2
+    svd = svd.annotate_rows(
+        is_indel=hl.if_else(
+            has_alt, c_ref.startswith(c_alt) | c_alt.startswith(c_ref), False
+        ),
+        indel_both_directions=hl.if_else(
+            has_alt, svd._site_allele_pairs.contains([c_alt, c_ref]), False
+        ),
+    )
+    return svd.drop("_site_allele_pairs")
 
 
 def _orient_weight_and_offset(

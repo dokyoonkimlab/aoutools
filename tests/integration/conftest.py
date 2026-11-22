@@ -113,8 +113,8 @@ def hail_context(tmp_path_factory):
     hl.stop()
 
 
-def _build_vds() -> hl.vds.VariantDataset:
-    """Builds the mock VDS from VARIANTS.
+def _build_vds(variants=None, samples=None) -> hl.vds.VariantDataset:
+    """Builds a mock VDS, from VARIANTS and SAMPLES unless others are given.
 
     Entries use the local (`LGT`/`LA`) encoding, which is what All of Us ships:
     `LA` lists the global allele indices this sample uses, and `LGT` indexes
@@ -132,9 +132,11 @@ def _build_vds() -> hl.vds.VariantDataset:
     )
 
     entries = []
-    for locus_str, alleles, carriers in VARIANTS:
+    variants = VARIANTS if variants is None else variants
+    samples = SAMPLES if samples is None else samples
+    for locus_str, alleles, carriers in variants:
         pos = int(locus_str.split(":")[1])
-        for sample in SAMPLES:
+        for sample in samples:
             if sample not in carriers:
                 # Homozygous reference: a reference block, never a variant
                 # entry. This is what makes hom-ref samples invisible to the
@@ -262,3 +264,13 @@ def vds_locus_shifting():
     ht = ht.drop("gt", "la", "locus_str")
     mt = ht.to_matrix_table(row_key=["locus", "alleles"], col_key=["s"])
     return hl.vds.VariantDataset.from_merged_representation(mt, is_split=False)
+
+
+@pytest.fixture(scope="session")
+def build_vds():
+    """The mock-VDS builder, for a test module that needs its own sites.
+
+    Call it as `build_vds(variants, samples)`, with `variants` shaped like
+    VARIANTS. See `test_indel_direction.py`.
+    """
+    return _build_vds

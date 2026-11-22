@@ -29,6 +29,78 @@ were never case-normalized, so a lowercase weights file scored **every sample
 them release-blocking — they are collected under "Open review findings" at the
 end of this file.
 
+**Finding 9 (fixed, unreleased).** Reported from a real 0.2.0 run on 2026-11-22:
+the unordered allele match took one indel weight onto both the insertion and the
+deletion of the same letters, and the two cancelled. See below.
+
+---
+
+## ~~Finding 9~~ — an indel weight matched the insertion *and* the deletion
+
+**Fixed** (2026-11-22, unreleased). Reported against 0.2.0 from a real Workbench
+run, with a v9 VDS site to reproduce (chr10:100345125). Reproduced on the mock
+VDS before the fix; the per-genotype numbers below are from that run.
+
+Finding 7 made the match order-blind: a weights row matches a VDS row when the
+two **unordered allele sets** are equal. That is safe for a SNP, because only one
+of its two alleles can be the reference base at the position. It is **not** safe
+for an indel. In minimal form an indel's alleles are nested (one is a prefix of
+the other), and both can be prefixes of the reference sequence. At a site whose
+reference reads `CA...`, the deletion `CA -> C` reduces to `[CA, C]` and the
+insertion `CA -> CAA` reduces to `[C, CA]`. These are the same set: two different
+variants, opposite order.
+
+So one `C`/`CA` weight matched **both** split rows. The swapped row was then
+scored as REF-effect (`2w − w·n_non_ref`) and the right row as ALT-effect
+(`w·n_ins`). Summed: `2w − w·(copies of the site's other ALTs)`. The intended
+variant **cancels exactly**. Measured at `[CA, C, CAA]`, insertion weight `w = 1`:
+for CA/CA, CA/CAA, CAA/CAA, CA/C, C/CAA, C/C the expected scores were `0 1 2 0 1 0`,
+and the code returned `2 2 2 1 1 0`. With `effect_allele_is_alt=True` (no offset)
+it returned `0 0 0 −1 −1 −2`, which also broke that flag's "only a constant shift"
+promise. The only visible sign was `n_matched` exceeding the number of weights:
+in the reporter's 105,284-variant score, 1,152 weights matched two rows each.
+
+Two more shapes have the same cause, and neither was in the report:
+
+* **A file weighting both variants loses one.** Insertion `w = 1` plus deletion
+  `w = 10` at one site: both fit both rows, `.find` took the first for each row,
+  and the deletion's weight vanished.
+* **A one-direction site takes the mirror variant.** A site storing only
+  `[CA, C]` still matches an insertion-labeled `C`/`CA` weight, as a REF-effect
+  deletion. Only one row matches, so a double-match check cannot see it. Whether
+  this is wrong depends on the file's convention, which the data cannot reveal.
+
+**Why the data cannot settle it.** Both alleles are prefixes of the reference,
+so the reference genome fits either reading. Only the weights file's own labeling
+says which allele is the REF. Any rule here is an assumption about the file, so
+the fix makes the assumption explicit and reports it.
+
+**The fix.** `_split_multi_with_total_dosage` records every ALT's minimal pair
+*before* the split, while the site is one row, and flags each split row with
+`is_indel` (nested alleles) and `indel_both_directions` (the reversed pair is also
+at the site). `_match_weight_at_locus` then:
+
+* matches non-indels on the unordered set, as before (Finding 7 stays closed);
+* with `effect_allele_is_alt`, matches every indel only in the stated order;
+* otherwise, at a both-directions site, matches only in order, reading the
+  non-effect allele as the REF. With `skip_ambiguous_indels` the weight is zeroed
+  instead. It is still matched, so the single-score path's `filter_rows` keeps
+  it for counting, but `n_matched` (`n_scored`) excludes it;
+* at a one-direction site, keeps the unordered match, since it may be a genuine
+  REF-effect indel. It reports the count at WARNING.
+
+A tripwire, `_check_one_row_per_weight`, rides the existing row pass and raises
+if any weight lands on two rows. Counts are tallied across chunks and logged once
+per score. All of it is shuffle-free and adds no pass. It is skipped only on the
+`effect_allele_is_alt` single-pass fast path, where indels are already ordered.
+
+Pinned by `tests/integration/test_indel_direction.py` (both paths, every
+genotype, the option matrix, the one-direction case, the log, and the tripwire).
+**Still to do on the Workbench:** add a real site of this shape to
+`notebooks/02_validate_scoring_on_aou.ipynb` against the `to_dense_mt` oracle
+(chr10:100345125 is one), and the `[CA, C, CAA]` shape to notebook 03's synthetic
+control and to the gallery in `docs/source/scoring_method.rst`.
+
 ---
 
 ## The root cause: a hom-ref sample is not a missing entry
@@ -321,6 +393,9 @@ genotype.
 | no-call entry | contributes nothing; the offset is cancelled by `_entry_contribution` |
 | non-minimal representation (suffix trim) | correct: normalized to the variant the GWAS names |
 | minrep would shift the locus (prefix trim) | **raises** — a deliberate tripwire; does not occur in AoU (Finding 5) |
+| indel at a site carrying both directions | matched once, non-effect allele read as REF; or left out with `skip_ambiguous_indels` (Finding 9) |
+| indel only in the opposite direction at its site | kept as REF-effect and reported; dropped under `effect_allele_is_alt` (Finding 9) |
+| one weight matching two VDS rows | **raises** — a tripwire (Finding 9) |
 
 ---
 
@@ -544,6 +619,11 @@ validation; they are struck through rather than deleted.
   should move. **Sort the pair inside `_check_duplicated_ids` only** — sorting
   anywhere in the match path is Finding 7 coming back. `_reader.py:89`,
   `_calculator_utils.py:238`.
+
+  **Finding 9 narrows this:** sort only *non-indel* pairs. `C/CA` and `CA/C` are
+  an insertion and a deletion, two different variants, and the matcher now scores
+  them separately. Sorting them together would reject a valid file. For SNPs the
+  orientation-blind `.find` still drops the second of `A/G` + `G/A`.
 
   Finding 8 changed the shape of this slightly, in both directions. Same
   orientation, different case (`a/g` + `A/G`) is now *caught*, because

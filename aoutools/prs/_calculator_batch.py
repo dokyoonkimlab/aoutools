@@ -1,6 +1,7 @@
 """PRS batch calculator"""
 
 import logging
+from collections import Counter
 
 import hail as hl
 import hailtop.fs as hfs
@@ -9,14 +10,18 @@ import pandas as pd
 from aoutools._utils.helpers import SimpleTimer
 
 from ._calculator_utils import (
+    _check_one_row_per_weight,
     _create_1bp_intervals,
     _entry_contribution,
     _group_weights_by_locus,
+    _indel_row_counts,
+    _log_indel_tally,
     _match_weight_at_locus,
     _orient_weight_and_offset,
     _prepare_samples_to_keep,
     _prepare_weights_for_chunking,
     _split_multi_with_total_dosage,
+    _tally_indel_counts,
     _unpersist_quietly,
     _validate_and_prepare_weights_table,
 )
@@ -85,10 +90,10 @@ def _prepare_batch_weights_data(
 
 
 def _build_row_annotations(
-    mt_locus: hl.expr.LocusExpression,
-    mt_canonical_alleles: hl.expr.ArrayExpression,
+    mt: hl.MatrixTable,
     weights_tables_map: dict[str, hl.Table],
     prepared_weights: dict[str, hl.Table],
+    config: PRSConfig,
 ) -> dict[str, hl.expr.Expression]:
     """
     Builds a dictionary of row annotations for PRS calculation.
@@ -100,22 +105,25 @@ def _build_row_annotations(
       was found for that score.
 
     The join is the same shuffle-free one the single-score path uses: match by
-    locus (a key-prefix join, `prepared_weights[score][mt_locus]`), then by
-    alleles locally against the row's minimal `canonical_alleles`. See
+    locus (a key-prefix join, `prepared_weights[score][mt.locus]`), then by
+    alleles locally against the row's minimal `canonical_alleles`, with indels
+    matched in a fixed direction where the data cannot settle it. See
     `_group_weights_by_locus` and `_match_weight_at_locus`.
 
     Parameters
     ----------
-    mt_locus : hl.expr.LocusExpression
-        The MatrixTable row's locus (its leading key), joined against each
-        locus-grouped weights table.
-    mt_canonical_alleles : hl.expr.ArrayExpression
-        The row's minimal `[ref, alt]` from `_split_multi_with_total_dosage`,
-        matched locally against the weights at that locus.
+    mt : hl.MatrixTable
+        The split MatrixTable from `_split_multi_with_total_dosage`. Its locus
+        (the leading key) is joined against each locus-grouped weights table,
+        and its `canonical_alleles`, `is_indel`, and `indel_both_directions`
+        row fields drive the local allele match.
     weights_tables_map : dict[str, hl.Table]
         A dictionary mapping score names to the original weights tables.
     prepared_weights : dict[str, hl.Table]
         A dictionary of validated, locus-grouped weights tables.
+    config : PRSConfig
+        Supplies `effect_allele_is_alt` and `skip_ambiguous_indels`, which
+        decide how indels are matched.
 
     Returns
     -------
@@ -126,8 +134,7 @@ def _build_row_annotations(
     annotations = {}
     for score_name in weights_tables_map:
         weights_info_expr = _match_weight_at_locus(
-            prepared_weights[score_name][mt_locus].variants,
-            mt_canonical_alleles,
+            prepared_weights[score_name][mt.locus].variants, mt, config
         )
         annotations[f"weights_info_{score_name}"] = weights_info_expr
         annotations[f"is_valid_{score_name}"] = hl.is_defined(weights_info_expr)
@@ -216,6 +223,7 @@ def _calculate_prs_chunk_batch(
     weights_tables_map: dict[str, hl.Table],
     prepared_weights: dict[str, hl.Table],
     config: PRSConfig,
+    tally: Counter | None = None,
 ) -> pd.DataFrame:
     """
     Calculates all Polygenic Risk Scores (PRS) for a single chunk of a
@@ -240,6 +248,10 @@ def _calculate_prs_chunk_batch(
     config : PRSConfig
         The calculation parameters. ``include_n_matched`` controls whether the
         matched-variant counts are also computed here.
+    tally : collections.Counter, optional
+        A running per-score count of indels of uncertain direction, added to in
+        place so the caller can report it once for the whole run
+        (`_log_indel_tally`). Only filled when a row reduction runs.
 
     Returns
     -------
@@ -270,10 +282,7 @@ def _calculate_prs_chunk_batch(
         config.detailed_timings,
     ):
         row_annotations = _build_row_annotations(
-            mt.locus,
-            mt.canonical_alleles,
-            weights_tables_map,
-            prepared_weights,
+            mt, weights_tables_map, prepared_weights, config
         )
         mt = mt.annotate_rows(**row_annotations)
 
@@ -295,35 +304,40 @@ def _calculate_prs_chunk_batch(
         # `effect_allele_is_alt` skips the offset reduction: if every effect
         # allele is the ALT there are no REF-effect variants and every offset is
         # zero. With no `n_matched` the per-sample scores are then the only
-        # pass. Orientation stays per row, so a wrong assertion only shifts
-        # every score by a constant (rankings preserved), never reordering the
-        # cohort. See `_calculator.py` for the single-score twin. The
+        # pass. Orientation stays per row, so for a SNP a wrong assertion only
+        # shifts every score by a constant (rankings preserved); a REF-effect
+        # indel is instead left out, since indels match only in the stated
+        # direction under this flag. See `_calculator.py` for the single-score
+        # twin. The
         # `n_matched` counts are a separate row reduction, so requesting them
         # keeps a second pass (and the persist above) even with this set.
-        rows = mt.rows()
-        row_agg_exprs = {}
-        if not config.effect_allele_is_alt:
-            row_agg_exprs.update(
-                {
-                    f"total_offset_{score_name}": hl.agg.sum(
+        #
+        # Whenever that pass runs it also counts, per score, the indels of
+        # uncertain direction for the run's log, and checks that no weight was
+        # matched to two rows -- both free riders on the same scan. Batch mode
+        # never filters rows (it masks with `is_valid_*`), so every count is
+        # gated on `is_valid_{score}`, not a plain row count.
+        row_aggs = None
+        if persisted:
+            rows = mt.rows()
+            row_agg_exprs = {}
+            for score_name in weights_tables_map:
+                counts = _indel_row_counts(
+                    rows,
+                    rows[f"weights_info_{score_name}"],
+                    rows[f"is_valid_{score_name}"],
+                    config,
+                )
+                row_agg_exprs[f"counts_{score_name}"] = hl.struct(**counts)
+                if not config.effect_allele_is_alt:
+                    row_agg_exprs[f"total_offset_{score_name}"] = hl.agg.sum(
                         _build_row_offset_expr(rows, score_name)
                     )
-                    for score_name in weights_tables_map
-                }
-            )
-        if config.include_n_matched:
-            # Batch mode never filters rows (it masks with `is_valid_*`), so the
-            # count must be `count_where(is_valid_{score})`, not a plain row
-            # count.
+            row_aggs = rows.aggregate(hl.struct(**row_agg_exprs))
             for score_name in weights_tables_map:
-                row_agg_exprs[f"n_matched_{score_name}"] = hl.agg.count_where(
-                    rows[f"is_valid_{score_name}"]
-                )
-        row_aggs = (
-            rows.aggregate(hl.struct(**row_agg_exprs))
-            if row_agg_exprs
-            else None
-        )
+                counts = row_aggs[f"counts_{score_name}"]
+                _check_one_row_per_weight(counts, f"score '{score_name}'")
+                _tally_indel_counts(tally, counts, score_name)
 
         # Step 4: One entry pass -- each score's entry term, plus its row-level
         # offset scalar unless the offset pass was skipped.
@@ -343,10 +357,11 @@ def _calculate_prs_chunk_batch(
         if config.include_n_matched:
             # Per-chunk scalars, identical for every sample; summed across
             # chunks in the pandas aggregation.
+            # `n_scored` excludes indels `skip_ambiguous_indels` left out.
             prs_table = prs_table.annotate(
                 **{
-                    f"n_matched_{score_name}": row_aggs[
-                        f"n_matched_{score_name}"
+                    f"n_matched_{score_name}": row_aggs[f"counts_{score_name}"][
+                        "n_scored"
                     ]
                     for score_name in weights_tables_map
                 }
@@ -411,6 +426,7 @@ def _process_chunks_batch(
     PRSConfig : A configuration class that holds parameters for PRS calculation.
     """
     partial_dfs = []
+    tally = Counter()
     for i in range(n_chunks):
         # Always show chunk processing time to track progress
         with _log_timing(f"Processing chunk {i + 1}/{n_chunks}", True):
@@ -443,12 +459,15 @@ def _process_chunks_batch(
                     weights_tables_map,
                     chunked_prepared_weights,
                     config,
+                    tally=tally,
                 )
             )
 
             # The result is materialized, so the persisted loci chunk can be
             # released too.
             _unpersist_quietly(loci_chunk)
+
+    _log_indel_tally(tally, config)
     return partial_dfs
 
 

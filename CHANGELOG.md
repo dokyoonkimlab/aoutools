@@ -8,6 +8,42 @@ While the library is pre-1.0, breaking changes may land in a minor version.
 
 ## [Unreleased]
 
+### Added
+
+- `PRSConfig(skip_ambiguous_indels=True)` leaves out indels whose direction the
+  data cannot settle (see **Fixed**), for weights files that do not list the
+  reference allele as the non-effect allele. Off by default.
+
+### Changed
+
+- With `effect_allele_is_alt=True`, an indel is now scored only in the direction
+  the file gives, with the non-effect allele as the reference. An indel whose
+  effect allele turns out to be the reference is therefore left out, where
+  before it was scored and every score was shifted by a constant. Single-letter
+  variants behave as before.
+- A run now stops with an error if any weight would be counted against two
+  genomic rows. Nothing in the current *All of Us* data should trigger it; it
+  guards against the double counting described under **Fixed** coming back in a
+  new form.
+
+### Fixed
+
+- **Indels at sites carrying both an insertion and a deletion of the same
+  letters were scored wrongly, with no error.** At a position where the
+  reference reads `CA`, the deletion `CA` → `C` and the insertion `C` → `CA`
+  have the same two alleles in opposite order. A weight for either one was
+  matched to both, and the two contributions cancelled: the variant the weight
+  named added nothing, and the site's other alternate alleles entered with the
+  opposite sign. Each such weight is now scored against one variant, reading the
+  non-effect allele as the reference (or left out, with `skip_ambiguous_indels`).
+  The only visible sign was `n_matched` running higher than the number of
+  weights. In one 105,284-variant score, 1,152 weights (1.1%) were affected.
+  **Scores from 0.2.0 that include indels can change**, and so can sample
+  rankings. A file that weighted both the insertion and the deletion at one site
+  also lost one of the two weights, and that is fixed too.
+- `n_matched` is described correctly: it counts the weights scored, and is the
+  same for every sample.
+
 ## [0.2.0] - 2026-08-19
 
 This release resolves effect-allele orientation per variant, so a weights file no

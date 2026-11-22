@@ -266,7 +266,28 @@ these would fail to line up and the variant would silently score nothing.
   lets ``G/A`` in the file match ``A/G`` in the data (Trap 1). Only after they
   match does the library decide which allele is the effect allele. Matching on
   *ordered* alleles instead used to drop every variant whose alleles sorted the
-  "wrong" way, about half of them.
+  "wrong" way, about half of them. Indels are the one exception, described
+  next.
+
+**Indels whose direction the data cannot tell.** For a single-letter variant,
+only one of the two alleles can be the reference letter at that position, so
+the pair can be read only one way. An indel's two alleles can both match the
+reference. At a position where the reference reads ``CA``, deleting the ``A``
+gives the pair ``CA`` → ``C``, and inserting another ``A`` gives ``C`` → ``CA``.
+Some sites in *All of Us* carry both. Both variants have the same two alleles,
+``C`` and ``CA``, in opposite order. A weights row naming ``C`` and ``CA``
+fits either one, and only the file's own labeling says which it means.
+
+``aoutools`` scores such a row against **one** of the two variants, never both.
+Scoring it against both would let the two cancel out, so the intended variant
+would add nothing to the score. By default it reads the non-effect allele as the
+reference, the usual convention of harmonized GWAS summaries: effect allele
+``CA`` with non-effect allele ``C`` scores the insertion. If your file does not
+follow that convention, set ``skip_ambiguous_indels=True`` in ``PRSConfig`` to
+leave these indels out instead. If every row of your file gives the reference as
+the non-effect allele, ``effect_allele_is_alt=True`` says so, and every indel is
+then read in the direction the file gives. The log reports how many indels each
+rule touched.
 
 A weights row that names the *same* allele as both its effect and non-effect
 allele, a degenerate ``A/A`` row, describes no real variant. Its two alleles are
