@@ -32,9 +32,28 @@ or the module fails to import under autodoc and the API reference vanishes.
 
 ## 3. Tests
 
-`hail` has no macOS wheel, so `pixi run -e ci test` cannot run on a Mac —
-that environment is linux-64 only. **But the mocked suite only needs hail to be
-importable**, so a stub is enough to run that tier locally:
+`pixi run -e ci test` cannot run on a Mac: the `ci` environment takes hail from
+conda, which is linux-64 only. The `integration` environment installs hail from
+**PyPI** instead, and that wheel runs on macOS, so use it to run the mocked suite
+against **real hail**. It is what CI runs, minus the exact Workbench pins:
+
+```bash
+pixi run -e integration python -m pytest tests/prs -q -m 'not integration'
+```
+
+Expect **81 passed** in about a second. **Run this one, not just the stub
+below.** It catches what the stub cannot: a test that mocks `hl` in one module
+while the code it calls builds expressions in another. For example, the
+calculator tests patch `aoutools.prs._calculator.hl`, but `_calculator_utils`
+keeps the real `hl`, so a new helper there receives `MagicMock` rows and real hail
+rejects them (`count_where: expected expression of type bool, found
+MagicMock`). The stub turns *every* module's `hl` into a mock, so it passed while
+CI failed. That happened on the Finding 9 fix. The cure is to stub the helper at
+the calculator's import boundary, as the tests already do for
+`_build_row_offset_expr`.
+
+The stub run is still a quick check that needs no Spark-capable environment. The
+mocked suite only needs hail to be importable:
 
 ```bash
 STUB=$(mktemp -d)
@@ -60,16 +79,24 @@ the ones the tests touch. `hail.utils.java.FatalError` is one such import
 test runs. If you see `ModuleNotFoundError: No module named 'hail.<something>'`,
 add it here rather than assuming the suite is broken.
 
-Expect **78 passed, 26 deselected** in about a second, matching CI.
+Expect **81 passed, 40 deselected** in about a second.
 
 **The stub is a convenience, not the source of truth.** It is not hail: it cannot
 catch anything that depends on real hail behavior — typechecks on expressions,
-`hl` constructors rejecting a bad argument, or an import that only breaks against
-the real package. A green stub run is necessary, not sufficient. On Linux, or in
-CI, run the real thing:
+`hl` constructors rejecting a bad argument, a mock leaking across modules (above),
+or an import that only breaks against the real package. A green stub run is
+necessary, not sufficient. Run the real-hail command above. On Linux, or in CI,
+the exact Workbench pins are available too:
 
 ```bash
 pixi run -e ci test        # Linux only; real hail 0.2.135
+```
+
+If you changed scoring logic, also run the real-hail integration tier. It takes
+about ten minutes:
+
+```bash
+pixi run -e integration test-integration
 ```
 
 CI runs three jobs (`lint`, `docs`, `test`) on every push to `main`/`dev`. It is

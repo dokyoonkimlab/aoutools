@@ -114,6 +114,20 @@ class TestBatchHelpers:
     Tests for internal helper functions in the batch calculation workflow.
     """
 
+    @pytest.fixture(autouse=True)
+    def _stub_indel_row_counts(self, mocker):
+        """Stub `_indel_row_counts` at the module boundary.
+
+        These tests mock `hl` only inside the batch calculator module. The
+        helper lives in `_calculator_utils`, whose `hl` is real hail in CI, so
+        it would type-check the mocked rows and raise. Its real expressions are
+        exercised in tests/integration/test_indel_direction.py.
+        """
+        mocker.patch(
+            "aoutools.prs._calculator_batch._indel_row_counts",
+            side_effect=lambda *args, **kwargs: {"n_scored": MagicMock()},
+        )
+
     def test_prepare_batch_weights_data(self, mocker):
         """
         Tests that the batch preparation function processes each table and

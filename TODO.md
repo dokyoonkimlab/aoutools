@@ -29,9 +29,10 @@ were never case-normalized, so a lowercase weights file scored **every sample
 them release-blocking — they are collected under "Open review findings" at the
 end of this file.
 
-**Finding 9 (fixed, unreleased).** Reported from a real 0.2.0 run on 2026-11-22:
-the unordered allele match took one indel weight onto both the insertion and the
-deletion of the same letters, and the two cancelled. See below.
+**Finding 9 (fixed, unreleased; Workbench-validated).** Reported from a real
+0.2.0 run on 2026-11-22: the unordered allele match took one indel weight onto
+both the insertion and the deletion of the same letters, and the two cancelled.
+Notebooks 02–04 pass on the Workbench with the fix. See below.
 
 ---
 
@@ -96,10 +97,43 @@ per score. All of it is shuffle-free and adds no pass. It is skipped only on the
 
 Pinned by `tests/integration/test_indel_direction.py` (both paths, every
 genotype, the option matrix, the one-direction case, the log, and the tripwire).
-**Still to do on the Workbench:** add a real site of this shape to
-`notebooks/02_validate_scoring_on_aou.ipynb` against the `to_dense_mt` oracle
-(chr10:100345125 is one), and the `[CA, C, CAA]` shape to notebook 03's synthetic
-control and to the gallery in `docs/source/scoring_method.rst`.
+**Validated on the Workbench (2026-11-22), against `d342848`.** Notebooks 02, 03,
+and 04 were run top to bottom on a Hail Genomic Analysis environment, and **every
+check passed**:
+
+* **02, check 11 (11a–11f).** Real data, against the `to_dense_mt` oracle: a real
+  both-direction site from the second window around chr10:100345125, and a real
+  biallelic deletion. Each indel weight scored its own variant once. Before the
+  fix, 11a/11b would have failed on `n_matched` alone.
+* **03.** The `[CA, C, CAA]` and deletion-only shapes ran through the public API
+  and the `gs://` round-trip, including 5e (`skip_ambiguous_indels`) and 5f
+  (`effect_allele_is_alt`).
+* **04, section 5b.** All 19 checks passed, but **5b exercised nothing.** Neither
+  score has a single indel weight: PGS000746 (1,940 variants, 1,932 matched)
+  and PGS000750 (43 variants, 43 matched) report "0 indel weights", with 0 at
+  both-direction sites and 0 read as reference-effect. So `n_matched` and every
+  score were identical with and without `skip_ambiguous_indels`, as they must
+  be, and the two consistency checks passed vacuously. The rest of 04 is
+  unaffected: in the orientation probe, 242 of 300 loci name the REF as the
+  effect allele, and batch agreed with single to 1.6e-14. 5b now records such a
+  score as **not exercised**, listed apart in the Summary, instead of passing it.
+
+The library run then was identical to the current one. A later CI failure was in
+the mocked unit tests only (`tests/prs/`, a `MagicMock` reaching real hail in
+`_calculator_utils`). It was fixed in the tests, and no library code changed.
+
+**Still open:**
+
+* **How often PGS Catalog files hit each indel rule** is unanswered, since both
+  scores in 04 are SNP-only. **Deferred on purpose (2026-11-22):** it is a
+  frequency measurement, not a correctness check. The scoring itself is
+  validated by 02 check 11 (real sites) and 03 5e/5f (a known answer through the
+  public API), both passing on the Workbench. When it matters, add a PGS ID whose
+  file has indels to 04 (5b prints the indel-weight count, so one run shows
+  whether a candidate qualifies). The count decides whether to recommend
+  `skip_ambiguous_indels` for `calculate_pgs`.
+* **The re-score of the reporter's 105,284-variant file** (expected `n_matched`
+  105,278 by default, 104,126 with `skip_ambiguous_indels`).
 
 ---
 

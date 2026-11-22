@@ -382,6 +382,20 @@ takes.
      - ``C`` (ALT)
      - A plain SNP carrying a negative, non-integer weight, so the total is real
        arithmetic rather than a copy count.
+   * - ``chr1:9500``
+     - ``CA/C/CAA``
+     - ``CA`` and ``C`` (both ALT)
+     - An insertion and a deletion of the same letter at one position. Their two
+       alleles are the same, ``C`` and ``CA``, in opposite order, so each weight
+       fits both variants. Each must score only its own variant (see "Indels
+       whose direction the data cannot tell" under Trap 5).
+   * - ``chr1:9600``
+     - ``CA/C``
+     - ``CA`` (REF)
+     - A deletion with no insertion beside it. The weight can only mean this
+       deletion with the reference as its effect allele, so it is kept that way.
+       With ``effect_allele_is_alt=True`` the file says ``CA`` is an inserted
+       allele, which is not in the data, so it scores nothing.
 
 
 A note on the weights themselves
