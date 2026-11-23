@@ -180,13 +180,51 @@ to skip that pass, which can roughly halve the run time.
     )
 
 Leave it off (the default) unless you are sure: with it off the scores are exact
-for any file. If you turn it on and a variant's effect allele turns out to be the
-reference base after all, every sample's score is lowered by the same amount --
-so the ranking of samples, which is what a PRS is normally used for, does not
-change, but the absolute score values shift. To check whether your file
-qualifies, count how many of your variants are reference-effect (the
-``04_validate_public_api_on_aou.ipynb`` notebook does this); if that count is
-zero, turning this on changes only the speed, not the scores.
+for any file (apart from the indels described next). If you turn it on and a
+single-letter variant's effect allele turns out to be the reference base after
+all, every sample's score is lowered by the same amount -- so the ranking of
+samples, which is what a PRS is normally used for, does not change, but the
+absolute score values shift. An **indel** whose effect allele turns out to be the
+reference is different: it is left out of the score, and that *can* change the
+ranking. To check whether your file qualifies, count how many of your variants
+are reference-effect (the ``04_validate_public_api_on_aou.ipynb`` notebook does
+this); if that count is zero, turning this on changes only the speed, not the
+scores.
+
+
+**Advanced: Indels whose direction the data cannot tell**
+
+Some positions in *All of Us* carry both an insertion and a deletion of the same
+letters. Where the reference reads ``CA``, deleting the ``A`` and inserting a
+second ``A`` give two variants with the same two alleles, ``C`` and ``CA``, in
+opposite order. A weights row naming ``C`` and ``CA`` fits either one, and only
+your file's labeling says which it means.
+
+By default ``aoutools`` reads the non-effect allele as the reference, the usual
+convention of harmonized GWAS summaries, and scores the row against that one
+variant. The log then shows a warning such as::
+
+    prs: 12 indels sit at sites that carry both the insertion and the deletion of the same letters...
+
+This is a notice, not an error: the score is computed. If your file always lists
+the reference as the non-effect allele, set ``effect_allele_is_alt=True`` (see
+above) to say so, which also silences the message. If your file does **not**
+list the reference as the non-effect allele (a PGS Catalog file, for example,
+often gives the reference as the effect allele), leave these indels out instead:
+
+.. code-block:: python
+
+    config_skip = PRSConfig(skip_ambiguous_indels=True)
+
+The log then reports how many were left out, and ``n_matched`` (with
+``include_n_matched=True``) does not count them. Every other variant is scored
+the same either way. :doc:`/scoring_method` explains why the data alone cannot
+settle this.
+
+A second warning, "indels were scored with their effect allele as the reference
+allele", covers indels where the data carries only one direction, so the row is
+read that way round. It is right if your file names those indels with the
+reference as the effect allele; the message says what to set if it does not.
 
 
 Tip: Batch PRS Calculation

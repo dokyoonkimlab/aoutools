@@ -455,6 +455,9 @@ def calculate_prs(
         is empty after validation.
     TypeError
         If the `config.samples_to_keep` argument is of an unsupported type.
+    RuntimeError
+        If any weight would be counted against two rows of the data. This is a
+        safeguard: nothing in the current *All of Us* data should trigger it.
 
     See also
     --------

@@ -3,7 +3,7 @@
 Every weight in the mock GWAS summary is 1.0, so a sample's `prs` is exactly the
 number of effect-allele copies the library counted for it. Each expected value
 below is derived by hand from the genotypes in `conftest.VARIANTS` and is
-labelled either CORRECT or BUG. Tests marked BUG pin down what the code does
+labeled either CORRECT or BUG. Tests marked BUG pin down what the code does
 today so that a fix is reviewable -- they do not endorse it. See TODO.md.
 
 The mock VDS (weights effect allele in brackets):
@@ -385,7 +385,7 @@ def test_a_locus_shifting_variant_raises_rather_than_vanishing(
 
     `chr1:1001 [GG, G, GT]` minreps its SNP allele to `G/T` at chr1:**1002**.
     `hl.vds.split_multi` will not relocate a row, so it offers only two
-    behaviours: raise (`filter_changed_loci=False`, the default) or silently
+    behaviors: raise (`filter_changed_loci=False`, the default) or silently
     drop the allele (`True`). Neither one scores the variant.
 
     We keep the raising default on purpose. **No variant of this shape exists
@@ -459,7 +459,7 @@ def test_scores_a_ref_effect_variant_exactly(vds_lgt, raw_weights):
     assert prs["S1"] == 2.0  # A/A -- supplied entirely by the offset
     assert prs["S2"] == 1.0  # A/G
     assert prs["S3"] == 0.0  # G/G
-    # S4 is a no-call; its offset is cancelled. See
+    # S4 is a no-call; its offset is canceled. See
     # test_does_not_invent_a_genotype_for_a_no_call.
     assert prs["S4"] == 0.0
 

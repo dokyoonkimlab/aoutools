@@ -17,7 +17,7 @@ has been retired.
 **All three tasks are closed.** The non-split scoring path is gone (Findings 1-3
 went with it), allele orientation is resolved per row (Finding 4), and Finding 5
 turned out **not to occur in All of Us at all** -- measured, not assumed -- so
-Task 3 was cancelled rather than built.
+Task 3 was canceled rather than built.
 
 **Finding 6 (fixed).** Found while writing the *oracle* for
 `notebooks/02_validate_scoring_on_aou.ipynb`: at a multi-allelic site, a REF-effect
@@ -31,8 +31,9 @@ end of this file.
 
 **Finding 9 (fixed, unreleased; Workbench-validated).** Reported from a real
 0.2.0 run on 2026-11-22: the unordered allele match took one indel weight onto
-both the insertion and the deletion of the same letters, and the two cancelled.
-Notebooks 02–04 pass on the Workbench with the fix. See below.
+both the insertion and the deletion of the same letters, and the two canceled.
+Notebooks 02–04 pass on the Workbench with the fix, and the reporter's
+105,284-variant file re-scores to the expected 105,278 matches. See below.
 
 ---
 
@@ -132,8 +133,24 @@ the mocked unit tests only (`tests/prs/`, a `MagicMock` reaching real hail in
   file has indels to 04 (5b prints the indel-weight count, so one run shows
   whether a candidate qualifies). The count decides whether to recommend
   `skip_ambiguous_indels` for `calculate_pgs`.
-* **The re-score of the reporter's 105,284-variant file** (expected `n_matched`
-  105,278 by default, 104,126 with `skip_ambiguous_indels`).
+* **`skip_ambiguous_indels` on the reporter's file** has not been run (expected
+  `n_matched` 104,126). Optional: 02 check 11 and 03 5e already cover the option.
+
+**The reporter's file, re-scored (2026-11-23, `27bf221`).** The same 105,284
+variants per factor, six factors (F1–F6), on the v9 VDS (535,662 participants,
+144.6 min), default options:
+
+* `n_matched` is **105,278** for every factor, exactly as expected. Before the
+  fix it was 106,430: 1,152 weights matched two rows each. Now each weight lands
+  on at most one row (the tripwire would have raised otherwise).
+* **1,152** indels per factor were reported at both-direction sites, the same
+  count as the double matches. Each is now scored once, with the non-effect
+  allele read as the REF.
+* **No** indels were scored in reverse (REF as the effect allele). Before the
+  fix, 1,152 matched rows were scored that way, one per double match.
+
+`aoutools` reported version 0.2.0 because the version was not bumped yet. The
+library code at `27bf221` is the same as at `d342848`.
 
 ---
 
@@ -241,7 +258,7 @@ rows) are tri-allelic SNPs, or indels sharing an anchor — none of which shift.
 Nothing was rebuilt. The proposed redesign (replace `hl.vds.split_multi` with an
 explode + `min_rep`-keyed join) would recover **zero** variants and would
 reintroduce hand-rolled allele handling of exactly the kind that caused Findings
-1-3. Cancelled.
+1-3. Canceled.
 
 Two guards were added instead:
 
@@ -375,7 +392,7 @@ before the fix: `n_matched` 0 instead of 3, all four samples 0.0, zero
 
 Note the inversion: with `validate_alleles=True` the same file fails *loudly*
 (every row drops against `^[ACGT]+$`, then "all variants were filtered out"). The
-safe behaviour was the non-default one.
+safe behavior was the non-default one.
 
 **The fix.** `_standardize_allele_columns` (`_utils.py`), applied at **both**
 entry points, which is the load-bearing part:
@@ -424,7 +441,7 @@ genotype.
 | effect allele on the **REF** | correct: `−w·n_non_ref` per entry **plus a row-level `2w`** applied to every sample |
 | REF-effect at a multi-allelic site | correct: a carrier of another ALT scores `2 − n_non_ref`, not `2` (Finding 6) |
 | variant not in the VDS | dropped for everyone, **and contributes no offset** |
-| no-call entry | contributes nothing; the offset is cancelled by `_entry_contribution` |
+| no-call entry | contributes nothing; the offset is canceled by `_entry_contribution` |
 | non-minimal representation (suffix trim) | correct: normalized to the variant the GWAS names |
 | minrep would shift the locus (prefix trim) | **raises** — a deliberate tripwire; does not occur in AoU (Finding 5) |
 | indel at a site carrying both directions | matched once, non-effect allele read as REF; or left out with `skip_ambiguous_indels` (Finding 9) |
@@ -499,7 +516,7 @@ Three invariants hold this up, and all three are asserted:
   gets this from `filter_rows`; the batch path never filters rows, so it gates on
   `is_valid_{score}`. (`test_does_not_credit_the_offset_for_an_unmatched_variant`,
   `test_batch_agrees_with_single`)
-- **The offset is cancelled for a no-call.** A hom-ref sample has no entry; a no-call
+- **The offset is canceled for a no-call.** A hom-ref sample has no entry; a no-call
   *does*, so it would collect the `2w` too — reintroducing Finding 2 by a new route.
   `_entry_contribution` gives a no-call `−hom_ref_offset`, zeroing it out. Without
   this, whether an unknown genotype was dropped or imputed would depend on which
@@ -511,7 +528,7 @@ Three invariants hold this up, and all three are asserted:
 Both were **mutation-tested**: dropping the offset, and dropping the no-call
 cancellation, each turn exactly the expected tests red and nothing else.
 
-### ~~Task 3 — the interval prefilter~~ (cancelled; the problem does not exist)
+### ~~Task 3 — the interval prefilter~~ (canceled; the problem does not exist)
 
 The prelude measurement came back zero, so the redesign was never built. See
 Finding 5 above for the numbers and for the two guards that were added instead.

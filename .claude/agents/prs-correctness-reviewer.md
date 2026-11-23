@@ -106,7 +106,7 @@ Four ways this goes wrong, all silent:
    callset invents signal for the entire cohort. The single-score path gets this
    from `filter_rows`; the batch path never filters rows, so it must gate on
    `is_valid_{score}`. Two mechanisms, one guarantee — check both.
-2. **Offset not cancelled for a no-call.** A hom-ref sample has no entry; a
+2. **Offset not canceled for a no-call.** A hom-ref sample has no entry; a
    no-call *does*. So a no-call also collects the `2w`, and an unknown genotype
    gets scored as two copies of the reference unless `_entry_contribution`
    subtracts it back out. That is the old non-split bug returning by a new route.

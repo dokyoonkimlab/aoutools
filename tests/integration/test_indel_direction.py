@@ -9,7 +9,7 @@ because both of its alleles are prefixes of the reference sequence.
 An unordered allele match took a `C`/`CA` weights row onto both split rows. The
 deletion row was scored as if its effect allele were the reference, and the
 two contributions summed to `2w - w * (copies of the site's other ALTs)`: the
-intended insertion cancelled out entirely, and a score stayed a clean float.
+intended insertion canceled out entirely, and a score stayed a clean float.
 Found on the real VDS at chr10:100345125 (`[CA, C, CAA, CAAA, TA]`), where
 1,152 of a 105,284-variant score's weights were matched twice.
 

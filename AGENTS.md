@@ -135,6 +135,15 @@ Sphinx **mocks `hail`** when building docs, and a mocked `hl.Table` rejects the 
 autodoc fails to import the module and **silently drops the whole API reference**
 while exiting 0. Keep that import when adding hail-typed unions elsewhere.
 
+## Spelling
+
+Use **American English**, not British, everywhere: code, comments, docstrings,
+log and error messages, docs, notebooks, `CHANGELOG.md`, `TODO.md`, and commit
+messages. So `color`, `normalize`, `recognize`, `behavior`, `analyze`,
+`canceled`, `modeling`, `license` (noun and verb), not `colour`, `normalise`,
+`recognise`, `behaviour`, `analyse`, `cancelled`, `modelling`, `licence`.
+Names taken from other libraries keep their own spelling.
+
 ## Logging
 
 Every module logs through `logging.getLogger(__name__)`, so all output lives under

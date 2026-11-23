@@ -8,7 +8,7 @@ that number is correct. You do not need any of this to use the library; the
 :doc:`how-to guides <guides/index>` are enough. Read on if you want to trust the
 scores, reproduce them, or understand why a value looks the way it does.
 
-Every behaviour described here is checked against real *All of Us* data before
+Every behavior described here is checked against real *All of Us* data before
 each release.
 
 Two symbols recur below. :math:`w` is a variant's **weight**, and :math:`n` is
@@ -160,7 +160,7 @@ Three quiet rules keep this honest, and all three are tested:
 
 - the constant is added only for variants actually **found** in the data. Adding
   it for an absent variant would invent signal for the whole cohort.
-- it is **cancelled** for a person whose genotype at that variant is *unknown*
+- it is **canceled** for a person whose genotype at that variant is *unknown*
   (see Trap 4). An unknown genotype is not the same as a reference match.
 - it is genuinely the same for everyone, so it can never reorder people.
 
@@ -235,7 +235,7 @@ in an earlier version, and the code now guards against it specifically.
    \begin{array}{l l}
    \text{ref / ref} & \text{known to carry 2 copies} \rightarrow 0.5 \times 2 = 1.0 \\
    \text{no-call}   & \text{genotype unknown} \rightarrow 0
-       \quad (\text{the } 2w \text{ constant is added, then cancelled back out})
+       \quad (\text{the } 2w \text{ constant is added, then canceled back out})
    \end{array}
 
 Without the cancellation, the no-call person would wrongly collect the :math:`2w`
@@ -427,7 +427,7 @@ three ways, none of which changes the numbers:
   one chunk or many.
 - **Batch scoring.** Computing several scores with ``calculate_prs_batch`` reads
   the VDS once for all of them, rather than once per score. Each score comes out
-  identical to computing it on its own, so batching is a speed optimisation, not
+  identical to computing it on its own, so batching is a speed optimization, not
   a different calculation.
 - **Scoring a subset of people.** If you only need a defined cohort, pass
   ``samples_to_keep`` and the library restricts the calculation to those people
@@ -448,7 +448,7 @@ DNA has two strands, and the same variant can be written from either one. A stud
 reporting a variant as ``A/G`` and *All of Us* recording it as ``T/C`` are
 describing the same thing, because ``A`` pairs with ``T`` and ``G`` pairs with
 ``C``. ``aoutools`` compares the letters as they are written, so it does not
-recognise those two as the same variant.
+recognize those two as the same variant.
 
 That has two consequences, and the difference between them matters:
 
@@ -489,5 +489,5 @@ spellings of the same variant, so the copy count behind every score is the right
 one. The one thing left to you is making sure your weights are on the same build
 and strand as the data before you start.
 
-Each behaviour above is validated against the real *All of Us* data before every
+Each behavior above is validated against the real *All of Us* data before every
 release, so the scores you get are the scores the method intends.

@@ -32,7 +32,7 @@ While the library is pre-1.0, breaking changes may land in a minor version.
   letters were scored wrongly, with no error.** At a position where the
   reference reads `CA`, the deletion `CA` → `C` and the insertion `C` → `CA`
   have the same two alleles in opposite order. A weight for either one was
-  matched to both, and the two contributions cancelled: the variant the weight
+  matched to both, and the two contributions canceled: the variant the weight
   named added nothing, and the site's other alternate alleles entered with the
   opposite sign. Each such weight is now scored against one variant, reading the
   non-effect allele as the reference (or left out, with `skip_ambiguous_indels`).

@@ -545,7 +545,7 @@ def _split_multi_with_total_dosage(
     #
     # The same locus-shift tripwire applies: a shared PREFIX moves the locus,
     # which hail cannot key across, so raise rather than silently drop -- the
-    # biallelic analogue of split_multi's filter_changed_loci=False, which does
+    # biallelic analog of split_multi's filter_changed_loci=False, which does
     # not cover these passthrough rows.
     mr = hl.min_rep(svd.locus, svd.alleles)
     canonical_alleles = (
@@ -691,7 +691,7 @@ def _entry_contribution(
     exactly the bug that sank the old non-split path, reappearing by a different
     route.
 
-    Cancelling also keeps missingness handled consistently. A no-call at an
+    Canceling also keeps missingness handled consistently. A no-call at an
     ALT-effect variant already contributes 0 (its dosage is missing and
     `hl.agg.sum` skips it). Without the cancellation, a no-call at a REF-effect
     variant would instead contribute `2w` -- so whether an unknown genotype was

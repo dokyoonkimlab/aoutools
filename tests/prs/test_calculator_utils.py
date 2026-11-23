@@ -115,7 +115,7 @@ class TestGroupWeightsByLocus:
     `_match_weight_at_locus`. Keying on the full `(locus, alleles)` instead
     would force the MT to be re-keyed to minimal alleles, shuffling every
     entry. The
-    orientation-agnostic and locus-shift behaviours are exercised for real in
+    orientation-agnostic and locus-shift behaviors are exercised for real in
     `tests/integration/test_allele_matching.py`; these only pin the shape.
     """
 

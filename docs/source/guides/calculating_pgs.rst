@@ -75,6 +75,12 @@ Important Considerations
 * **Customization**: For advanced calculation options, you can pass a
   ``PRSConfig`` object to the ``config`` argument, just as you would with
   ``calculate_prs`` or ``calculate_prs_batch``.
+* **Indels at sites with both an insertion and a deletion**: PGS Catalog files
+  do not always list the reference as the non-effect allele, so an indel at a
+  site carrying both directions may be read the wrong way round. The log reports
+  how many indels this touches in each score. If you would rather leave them
+  out, pass ``config=PRSConfig(skip_ambiguous_indels=True)``. See "Indels whose
+  direction the data cannot tell" in the PRS guide.
 * **Underlying Functions**: This workflow is a wrapper around other functions in
   the library. For more fine-grained control over downloading, reading, or
   calculation, you can use ``download_pgs``, ``read_prs_weights``, and
