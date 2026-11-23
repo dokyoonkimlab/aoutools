@@ -8,6 +8,13 @@ While the library is pre-1.0, breaking changes may land in a minor version.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-22
+
+This release fixes how indels are matched at positions that carry both an
+insertion and a deletion of the same letters. **Scores from 0.2.0 that include
+indels can change**; single-letter variants score exactly as before. See
+**Fixed**.
+
 ### Added
 
 - `PRSConfig(skip_ambiguous_indels=True)` leaves out indels whose direction the
@@ -25,6 +32,8 @@ While the library is pre-1.0, breaking changes may land in a minor version.
   genomic rows. Nothing in the current *All of Us* data should trigger it; it
   guards against the double counting described under **Fixed** coming back in a
   new form.
+- The PRS and PGS Catalog how-to guides explain how indels are handled, the
+  log warnings about them, and when to use `skip_ambiguous_indels`.
 
 ### Fixed
 
@@ -133,7 +142,8 @@ and **Fixed** below for what this means for results you already have.
   weight files and a cost-efficient strategy for calculating PRS directly on the
   *All of Us* VDS, including batch scoring.
 
-[Unreleased]: https://github.com/dokyoonkimlab/aoutools/compare/v0.2.0...dev
+[Unreleased]: https://github.com/dokyoonkimlab/aoutools/compare/v0.2.1...dev
+[0.2.1]: https://github.com/dokyoonkimlab/aoutools/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/dokyoonkimlab/aoutools/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/dokyoonkimlab/aoutools/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/dokyoonkimlab/aoutools/compare/v0.1...v0.1.1

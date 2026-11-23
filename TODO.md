@@ -29,7 +29,7 @@ were never case-normalized, so a lowercase weights file scored **every sample
 them release-blocking — they are collected under "Open review findings" at the
 end of this file.
 
-**Finding 9 (fixed, unreleased; Workbench-validated).** Reported from a real
+**Finding 9 (fixed in 0.2.1; Workbench-validated).** Reported from a real
 0.2.0 run on 2026-11-22: the unordered allele match took one indel weight onto
 both the insertion and the deletion of the same letters, and the two canceled.
 Notebooks 02–04 pass on the Workbench with the fix, and the reporter's
@@ -39,7 +39,7 @@ Notebooks 02–04 pass on the Workbench with the fix, and the reporter's
 
 ## ~~Finding 9~~ — an indel weight matched the insertion *and* the deletion
 
-**Fixed** (2026-11-22, unreleased). Reported against 0.2.0 from a real Workbench
+**Fixed** (2026-11-22, released in 0.2.1). Reported against 0.2.0 from a real Workbench
 run, with a v9 VDS site to reproduce (chr10:100345125). Reproduced on the mock
 VDS before the fix; the per-genotype numbers below are from that run.
 
